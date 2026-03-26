@@ -14,6 +14,7 @@ _COMMANDS = {
     "briefing": "preambulate.briefing",
     "sync":     "preambulate.sync",
     "export":   "preambulate.export",
+    "mcp":      "preambulate.mcp_server",
 }
 
 _USAGE = """\
@@ -28,6 +29,7 @@ Commands:
   briefing   Print the memory briefing (read-only; --focal for proximity mode)
   sync       Push or pull the graph snapshot to/from api.preambulate.dev
   export     Dump or restore the full graph to/from JSON
+  mcp        Start the MCP server (stdio transport)
 
 Run 'preambulate <command> --help' for per-command usage.
 """

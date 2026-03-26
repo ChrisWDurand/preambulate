@@ -13,7 +13,7 @@ Use `preambulate init --reset` to drop and recreate the database.
 
 For schema migrations: `preambulate export dump`, then `preambulate init --reset`, then `preambulate export restore --dump graph_export.json`.
 
-At session start, treat the memory briefing and git state as sufficient context to resume. Infer intent from both before asking clarifying questions.
+**CLAUDE.md is yours.** Use it for project architecture, conventions, and system design. Preambulate's own behavioral instructions ship through the MCP server automatically — they arrive as server instructions at the start of every session without requiring any entry here.
 
 ## Session capture
 

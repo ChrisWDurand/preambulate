@@ -7,7 +7,7 @@ name = "preambulate"
 version = "0.1.0"
 description = "Graph-based project memory for Claude Code — semantic density over transcript volume"
 requires-python = ">=3.8"
-dependencies = ["kuzu==0.4.2"]
+dependencies = ["kuzu==0.4.2", "mcp"]
 
 [project.urls]
 Homepage = "https://preambulate.dev"
