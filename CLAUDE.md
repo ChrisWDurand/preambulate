@@ -13,6 +13,8 @@ Use `preambulate init --reset` to drop and recreate the database.
 
 For schema migrations: `preambulate export dump`, then `preambulate init --reset`, then `preambulate export restore --dump graph_export.json`.
 
+At session start, treat the memory briefing and git state as sufficient context to resume. Infer intent from both before asking clarifying questions.
+
 ## Session capture
 
 A `SessionStart` hook runs `preambulate capture` at the start of every session. It creates a `Decision` node anchored to the `geometry` Concept node and prints the memory briefing.
