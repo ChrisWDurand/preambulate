@@ -79,36 +79,6 @@ def capture_session_start(db_path: Path, session_id: str) -> None:
         },
     )
 
-    # Anchor to the geometry Concept (seed-adjacent, depth 0)
-    result = conn.execute("MATCH (c:Concept {label: 'geometry'}) RETURN c.id LIMIT 1")
-    geometry_id = None
-    while result.has_next():
-        row = result.get_next()
-        geometry_id = row[0]
-
-    if geometry_id:
-        conn.execute(
-            """
-            MATCH (d:Decision {id: $d_id}), (c:Concept {id: $c_id})
-            CREATE (d)-[:ANCHORS {
-                weight:         $weight,
-                traversal_cost: $traversal_cost,
-                created_at:     $created_at,
-                rationale:      $rationale,
-                anchor_type:    $anchor_type
-            }]->(c)
-            """,
-            parameters={
-                "d_id":          decision_id,
-                "c_id":          geometry_id,
-                "weight":        1.0,
-                "traversal_cost": 0.0,
-                "created_at":    ts,
-                "rationale":     "Session start anchors to the graph root.",
-                "anchor_type":   "discussed",
-            },
-        )
-
     print(f"preambulate: session captured [{session_id}] at {ts.isoformat()}")
 
 
