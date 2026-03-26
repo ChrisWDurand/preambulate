@@ -79,6 +79,28 @@ def capture_session_start(db_path: Path, session_id: str) -> None:
         },
     )
 
+    # Anchor Decision -> geometry Concept
+    conn.execute(
+        """
+        MATCH (d:Decision {id: $d_id}), (c:Concept {label: 'geometry'})
+        CREATE (d)-[:ANCHORS {
+            weight:         $weight,
+            traversal_cost: $traversal_cost,
+            created_at:     $created_at,
+            rationale:      $rationale,
+            anchor_type:    $anchor_type
+        }]->(c)
+        """,
+        parameters={
+            "d_id":           decision_id,
+            "weight":         1.0,
+            "traversal_cost": 0.0,
+            "created_at":     ts,
+            "rationale":      "Session start anchored to seed geometry.",
+            "anchor_type":    "discussed",
+        },
+    )
+
     print(f"preambulate: session captured [{session_id}] at {ts.isoformat()}")
 
 
