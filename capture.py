@@ -103,6 +103,82 @@ def capture_session_start(db_path: Path, session_id: str) -> None:
 
     print(f"preambulate: session captured [{session_id}] at {ts.isoformat()}")
 
+    # ------------------------------------------------------------
+    # Memory briefing
+    # ------------------------------------------------------------
+    _print_briefing(conn, session_id)
+
+
+def _print_briefing(conn: kuzu.Connection, current_session_id: str) -> None:
+    lines = ["\n── preambulate memory briefing ─────────────────────────────"]
+
+    # Last 5 Decisions (excluding the session_start we just wrote)
+    lines.append("\nRecent decisions:")
+    r = conn.execute(
+        """
+        MATCH (d:Decision)
+        WHERE d.label <> 'session_start'
+        RETURN d.label, d.rationale, d.timestamp, d.session_id
+        ORDER BY d.timestamp DESC
+        LIMIT 5
+        """
+    )
+    found = False
+    while r.has_next():
+        found = True
+        label, rationale, ts, sid = r.get_next()
+        short_sid = (sid or "")[:8]
+        lines.append(f"  [{short_sid}] {ts}  {label}")
+        if rationale and rationale != "Claude Code session initiated.":
+            lines.append(f"    → {rationale}")
+    if not found:
+        lines.append("  (none yet)")
+
+    # Artifacts touched in the last 3 sessions (excluding current)
+    lines.append("\nArtifacts touched in last 3 sessions:")
+    r = conn.execute(
+        """
+        MATCH (d:Decision)
+        WHERE d.session_id <> $current_session_id
+        RETURN d.session_id, MAX(d.timestamp) AS last_ts
+        ORDER BY last_ts DESC
+        LIMIT 3
+        """,
+        parameters={"current_session_id": current_session_id},
+    )
+    recent_sessions = []
+    while r.has_next():
+        sid, _ = r.get_next()
+        if sid:
+            recent_sessions.append(sid)
+
+    if recent_sessions:
+        r = conn.execute(
+            """
+            MATCH (d:Decision)-[:ANCHORS]->(a:Artifact)
+            WHERE d.session_id IN $sids
+            RETURN DISTINCT a.path, a.kind, d.session_id
+            ORDER BY d.session_id, a.path
+            """,
+            parameters={"sids": recent_sessions},
+        )
+        found = False
+        current_sid = None
+        while r.has_next():
+            found = True
+            path, kind, sid = r.get_next()
+            if sid != current_sid:
+                current_sid = sid
+                lines.append(f"  session {(sid or '')[:8]}:")
+            lines.append(f"    {path}  ({kind})")
+        if not found:
+            lines.append("  (no file edits recorded)")
+    else:
+        lines.append("  (no prior sessions)")
+
+    lines.append("────────────────────────────────────────────────────────\n")
+    print("\n".join(lines))
+
 
 # ------------------------------------------------------------
 # Entry point
