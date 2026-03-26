@@ -3,15 +3,15 @@ Preambulate — session capture.
 
 Fires at Claude Code session start via the SessionStart hook.
 Creates a Decision node for the session and anchors it to the
-Seed node, giving the session a temporal address in the graph.
+seed geometry, giving the session a temporal address in the graph.
 
 Environment variables (set by Claude Code):
     CLAUDE_PROJECT_DIR  — absolute path to the project root
     CLAUDE_SESSION_ID   — session identifier (if provided)
 
-Usage (direct):
-    python capture.py
-    python capture.py --db ./memory.db --session-id <id>
+Usage:
+    preambulate capture
+    preambulate capture --db ./memory.db --session-id <id>
 """
 
 import argparse
@@ -22,21 +22,9 @@ from pathlib import Path
 
 import kuzu
 
-from briefing import print_briefing
+from preambulate import get_db_path
+from preambulate.briefing import print_briefing
 
-
-# ------------------------------------------------------------
-# Constants
-# ------------------------------------------------------------
-
-DEFAULT_DB_PATH = Path(
-    os.environ.get("CLAUDE_PROJECT_DIR", Path(__file__).parent)
-) / "memory.db"
-
-
-# ------------------------------------------------------------
-# Helpers
-# ------------------------------------------------------------
 
 def new_id() -> str:
     return str(uuid.uuid4())
@@ -46,10 +34,6 @@ def now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-# ------------------------------------------------------------
-# Capture
-# ------------------------------------------------------------
-
 def capture_session_start(db_path: Path, session_id: str) -> None:
     if not db_path.exists():
         print(f"preambulate: no database at {db_path}, skipping capture")
@@ -58,10 +42,9 @@ def capture_session_start(db_path: Path, session_id: str) -> None:
     db   = kuzu.Database(str(db_path))
     conn = kuzu.Connection(db)
 
-    ts = now()
+    ts          = now()
     decision_id = new_id()
 
-    # Write the Decision node
     conn.execute(
         """
         CREATE (d:Decision {
@@ -81,7 +64,6 @@ def capture_session_start(db_path: Path, session_id: str) -> None:
         },
     )
 
-    # Anchor Decision -> geometry Concept
     conn.execute(
         """
         MATCH (d:Decision {id: $d_id}), (c:Concept {label: 'geometry'})
@@ -104,24 +86,17 @@ def capture_session_start(db_path: Path, session_id: str) -> None:
     )
 
     print(f"preambulate: session captured [{session_id}] at {ts.isoformat()}")
-
     print_briefing(conn, session_id)
 
 
-# ------------------------------------------------------------
-# Entry point
-# ------------------------------------------------------------
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Capture a Claude Code session start.")
-    parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
+    parser.add_argument("--db", type=Path, default=get_db_path())
     parser.add_argument(
         "--session-id",
         default=os.environ.get("CLAUDE_SESSION_ID") or new_id(),
-        help="Session identifier. Defaults to CLAUDE_SESSION_ID env var or a new UUID.",
     )
     args = parser.parse_args()
-
     capture_session_start(db_path=args.db, session_id=args.session_id)
 
 

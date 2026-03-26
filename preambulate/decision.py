@@ -51,14 +51,14 @@ from typing import Optional
 
 import kuzu
 
+from preambulate import get_db_path
+
 
 # ------------------------------------------------------------
 # Constants
 # ------------------------------------------------------------
 
-DEFAULT_DB_PATH = Path(
-    os.environ.get("CLAUDE_PROJECT_DIR", Path(__file__).parent)
-) / "memory.db"
+DEFAULT_DB_PATH = get_db_path()
 
 SUPPORTED_RELS = {"INSTANTIATES", "DERIVES_FROM", "RESONATES_WITH"}
 

@@ -61,8 +61,15 @@ CREATE NODE TABLE Decision (
     rationale   STRING,
     timestamp   TIMESTAMP,
     session_id  STRING,
+    author      STRING,
+    machine_id  STRING,
     PRIMARY KEY (id)
 );
+
+// author     — identity of the person or agent who made this decision.
+//              NULL in v1 (single-user). Populated in v2 for attribution and conflict resolution.
+// machine_id — stable identifier of the machine where the decision was made.
+//              NULL in v1. Populated in v2 to track which client last wrote a region.
 
 
 // ------------------------------------------------------------

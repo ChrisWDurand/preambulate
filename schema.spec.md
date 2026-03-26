@@ -79,8 +79,12 @@ A specific moment in a conversation where a choice was made and anchored to one 
 | `rationale` | string | yes | Why this choice was made |
 | `timestamp` | datetime (ISO 8601) | yes | When the decision occurred |
 | `session_id` | string | yes | Identifier of the conversation session |
+| `author` | string | no | Identity of the person or agent who made this decision. Null in v1 (single-user). Populated in v2 for attribution and conflict resolution. |
+| `machine_id` | string | no | Stable identifier of the machine where the decision was made. Null in v1. Populated in v2 to track which client last wrote a region. |
 
 > A Decision node is the join point between a conversation thread and the graph. It connects *when* to *what*. Without `session_id` + `timestamp`, the memory has no temporal address and cannot be replayed or audited.
+>
+> `author` and `machine_id` are ownership fields required for v2 conflict resolution. They are optional in v1 but present in the schema from the start so no migration is needed at the v1→v2 boundary.
 
 ---
 
