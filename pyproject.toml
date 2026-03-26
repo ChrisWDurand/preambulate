@@ -12,5 +12,8 @@ dependencies = ["kuzu==0.4.2"]
 [project.urls]
 Homepage = "https://preambulate.dev"
 
+[tool.setuptools.package-data]
+preambulate = ["*.cypher"]
+
 [project.scripts]
 preambulate = "preambulate.cli:main"

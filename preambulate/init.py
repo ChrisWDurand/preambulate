@@ -19,7 +19,7 @@ from pathlib import Path
 
 import kuzu
 
-from preambulate import get_db_path, get_project_dir
+from preambulate import get_db_path
 
 
 SEED_PHRASE = "geometry governs exploration"
@@ -47,7 +47,7 @@ def run_ddl(conn: kuzu.Connection, ddl: str) -> None:
 
 
 def create_schema(conn: kuzu.Connection) -> None:
-    schema_file = get_project_dir() / "schema.cypher"
+    schema_file = Path(__file__).parent / "schema.cypher"
     ddl = schema_file.read_text(encoding="utf-8")
     run_ddl(conn, ddl)
     print(f"  schema created from {schema_file.name}")
