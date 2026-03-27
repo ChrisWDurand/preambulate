@@ -7,6 +7,7 @@ import sys
 
 _COMMANDS = {
     "init":     "preambulate.init",
+    "install":  "preambulate.install",
     "capture":  "preambulate.capture",
     "artifact": "preambulate.artifact",
     "infer":    "preambulate.infer",
@@ -22,6 +23,7 @@ usage: preambulate <command> [args]
 
 Commands:
   init       Initialise a new graph database
+  install    Write SessionStart/PostToolUse hooks to ~/.claude/settings.json
   capture    Record a session-start Decision node (SessionStart hook)
   artifact   Record a file edit as Artifact + Decision (PostToolUse hook)
   infer      Infer DERIVES_FROM edges from Python import statements

@@ -48,7 +48,7 @@ NODE_PROPS = {
     "Context":     ["id", "label", "active"],
     "Observation": ["id", "label", "source", "confidence"],
     "Decision":    ["id", "label", "rationale", "timestamp", "session_id",
-                    "author", "machine_id"],
+                    "author", "machine_id", "decision_type", "rationale_source"],
 }
 
 # (rel_type, from_type, to_type, extra_props)
@@ -236,8 +236,14 @@ def _restore_nodes(conn: kuzu.Connection, data: dict) -> int:
             continue
         props = NODE_PROPS.get(ntype, list(rows[0].keys()))
         for row in rows:
-            placeholders = ", ".join(f"{p}: ${p}" for p in props)
-            params = {p: _deserial(p, row.get(p)) for p in props}
+            # Skip null properties — Kuzu rejects null in CREATE statements.
+            # Properties absent from an older dump will simply be omitted.
+            params = {
+                p: _deserial(p, v)
+                for p in props
+                if (v := row.get(p)) is not None
+            }
+            placeholders = ", ".join(f"{p}: ${p}" for p in params)
             conn.execute(
                 f"CREATE (n:{ntype} {{{placeholders}}})",
                 parameters=params,
@@ -296,15 +302,15 @@ def verify(conn: kuzu.Connection) -> None:
     """Spot-check that the restore looks correct."""
     print("\nverification:")
 
-    # Decision nodes have author and machine_id columns
+    # Decision nodes — spot-check audit fields
     r = conn.execute(
-        "MATCH (d:Decision) RETURN d.id, d.author, d.machine_id LIMIT 3"
+        "MATCH (d:Decision) RETURN d.id, d.decision_type, d.rationale_source LIMIT 3"
     )
     found = False
     while r.has_next():
         found = True
-        did, author, machine_id = r.get_next()
-        print(f"  Decision {did[:8]}  author={author!r}  machine_id={machine_id!r}")
+        did, dtype, rsource = r.get_next()
+        print(f"  Decision {did[:8]}  decision_type={dtype!r}  rationale_source={rsource!r}")
     if not found:
         print("  (no Decision nodes)")
 
@@ -324,6 +330,224 @@ def verify(conn: kuzu.Connection) -> None:
         n = r.get_next()[0] if r.has_next() else 0
         total_edges += n
     print(f"  edges total: {total_edges}")
+
+
+# ------------------------------------------------------------
+# Incremental dump (sync payload)
+# ------------------------------------------------------------
+
+def dump_since(conn: kuzu.Connection, since: datetime | None) -> dict:
+    """
+    Return a graph export dict, optionally filtered to changes since `since`.
+
+    - Decision nodes: filtered by timestamp > since (if since is not None).
+    - All other nodes: always included — they have no timestamp, and the
+      merge layer deduplicates by UUID, so shipping them is safe and idempotent.
+    - Edges: filtered by created_at > since (if since is not None).
+
+    Returns the same dict structure as dump() writes, with version "2.0".
+    Used by sync push to build incremental payloads.
+    """
+    data: dict = {
+        "version":     "2.0",
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "nodes":       {},
+        "edges":       [],
+    }
+
+    for ntype in NODE_TYPES:
+        props     = NODE_PROPS[ntype]
+        available = [
+            p for p in props
+            if _prop_exists(conn, ntype, p)
+        ]
+        prop_list = ", ".join(f"n.{p} AS {p}" for p in available)
+
+        if since is not None and ntype == "Decision":
+            r = conn.execute(
+                f"MATCH (n:{ntype}) WHERE n.timestamp > $since RETURN {prop_list}",
+                parameters={"since": since},
+            )
+        else:
+            r = conn.execute(f"MATCH (n:{ntype}) RETURN {prop_list}")
+
+        rows = []
+        while r.has_next():
+            row    = r.get_next()
+            record = {p: _serial(v) for p, v in zip(available, row)}
+            for p in props:
+                if p not in record:
+                    record[p] = None
+            rows.append(record)
+        data["nodes"][ntype] = rows
+
+    for rel, from_type, to_type, extra in EDGE_SPECS:
+        all_props = BASE_EDGE_PROPS + extra
+        prop_list = ", ".join(f"r.{p} AS {p}" for p in all_props)
+
+        if since is not None:
+            r = conn.execute(
+                f"""
+                MATCH (a:{from_type})-[r:{rel}]->(b:{to_type})
+                WHERE r.created_at > $since
+                RETURN a.id AS from_id, b.id AS to_id, {prop_list}
+                """,
+                parameters={"since": since},
+            )
+        else:
+            r = conn.execute(
+                f"""
+                MATCH (a:{from_type})-[r:{rel}]->(b:{to_type})
+                RETURN a.id AS from_id, b.id AS to_id, {prop_list}
+                """
+            )
+
+        while r.has_next():
+            row   = r.get_next()
+            entry = {
+                "rel":       rel,
+                "from_type": from_type,
+                "to_type":   to_type,
+                "from_id":   row[0],
+                "to_id":     row[1],
+            }
+            for i, p in enumerate(all_props):
+                entry[p] = _serial(row[2 + i])
+            data["edges"].append(entry)
+
+    return data
+
+
+def _prop_exists(conn: kuzu.Connection, ntype: str, prop: str) -> bool:
+    """Return True if a property exists on a node table (schema probe)."""
+    try:
+        conn.execute(f"MATCH (n:{ntype}) RETURN n.{prop} LIMIT 0")
+        return True
+    except RuntimeError:
+        return False
+
+
+# ------------------------------------------------------------
+# Merge (sync pull)
+# ------------------------------------------------------------
+
+def merge_remote(
+    conn: kuzu.Connection,
+    remote: dict,
+) -> tuple[int, int, int]:
+    """
+    Merge a remote graph export dict into the local Kuzu database.
+    Returns (nodes_added, nodes_skipped, edges_added).
+
+    Node policy:
+      - Decision: if UUID absent locally → INSERT.
+                  If UUID present → local wins (conservative Stage 1/2 policy).
+                  TODO Stage 3: upgrade to LWW with DELETE+re-CREATE for newer remote.
+      - All others: if UUID absent → INSERT. If UUID present → skip.
+
+    Edge policy:
+      1. Skip if either endpoint UUID is missing locally.
+      2. Skip if (rel, from_type, to_type, from_id, to_id) already exists.
+      3. INSERT otherwise.
+
+    Nodes are always merged before edges.
+    """
+    nodes_added   = 0
+    nodes_skipped = 0
+    edges_added   = 0
+
+    # --- Phase 1: Nodes ---
+    for ntype in NODE_TYPES:
+        rows = remote.get("nodes", {}).get(ntype, [])
+        props = NODE_PROPS.get(ntype, [])
+        for row in rows:
+            uid = row.get("id")
+            if not uid:
+                continue
+
+            exists_r = conn.execute(
+                f"MATCH (n:{ntype} {{id: $id}}) RETURN COUNT(*)",
+                parameters={"id": uid},
+            )
+            exists = exists_r.get_next()[0] > 0 if exists_r.has_next() else False
+
+            if exists:
+                nodes_skipped += 1
+                continue
+
+            # INSERT — skip null properties (Kuzu rejects null in CREATE)
+            params = {
+                p: _deserial(p, v)
+                for p in props
+                if (v := row.get(p)) is not None
+            }
+            if not params:
+                continue
+            placeholders = ", ".join(f"{p}: ${p}" for p in params)
+            conn.execute(
+                f"CREATE (n:{ntype} {{{placeholders}}})",
+                parameters=params,
+            )
+            nodes_added += 1
+
+    # --- Phase 2: Edges ---
+    for edge in remote.get("edges", []):
+        rel       = edge.get("rel")
+        from_type = edge.get("from_type")
+        to_type   = edge.get("to_type")
+        from_id   = edge.get("from_id")
+        to_id     = edge.get("to_id")
+
+        if not all([rel, from_type, to_type, from_id, to_id]):
+            continue
+
+        # Verify both endpoints exist locally
+        fr = conn.execute(
+            f"MATCH (n:{from_type} {{id: $id}}) RETURN COUNT(*)",
+            parameters={"id": from_id},
+        )
+        tr = conn.execute(
+            f"MATCH (n:{to_type} {{id: $id}}) RETURN COUNT(*)",
+            parameters={"id": to_id},
+        )
+        if not (fr.get_next()[0] > 0 and tr.get_next()[0] > 0):
+            continue
+
+        # Idempotency check — skip if this directed edge already exists
+        er = conn.execute(
+            f"""
+            MATCH (a:{from_type} {{id: $fid}})-[r:{rel}]->(b:{to_type} {{id: $tid}})
+            RETURN COUNT(*)
+            """,
+            parameters={"fid": from_id, "tid": to_id},
+        )
+        if er.get_next()[0] > 0:
+            continue
+
+        # Build edge properties — skip nulls
+        all_props  = BASE_EDGE_PROPS + [
+            k for k in edge
+            if k not in ("rel", "from_type", "to_type", "from_id", "to_id")
+            and k not in BASE_EDGE_PROPS
+        ]
+        prop_set = ", ".join(
+            f"{p}: ${p}" for p in all_props if edge.get(p) is not None
+        )
+        params = {"fid": from_id, "tid": to_id}
+        for p in all_props:
+            if edge.get(p) is not None:
+                params[p] = _deserial(p, edge[p])
+
+        conn.execute(
+            f"""
+            MATCH (a:{from_type} {{id: $fid}}), (b:{to_type} {{id: $tid}})
+            CREATE (a)-[:{rel} {{{prop_set}}}]->(b)
+            """,
+            parameters=params,
+        )
+        edges_added += 1
+
+    return nodes_added, nodes_skipped, edges_added
 
 
 # ------------------------------------------------------------

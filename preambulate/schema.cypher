@@ -56,20 +56,26 @@ CREATE NODE TABLE Observation (
 );
 
 CREATE NODE TABLE Decision (
-    id          STRING,
-    label       STRING,
-    rationale   STRING,
-    timestamp   TIMESTAMP,
-    session_id  STRING,
-    author      STRING,
-    machine_id  STRING,
+    id               STRING,
+    label            STRING,
+    rationale        STRING,
+    timestamp        TIMESTAMP,
+    session_id       STRING,
+    author           STRING,
+    machine_id       STRING,
+    decision_type    STRING,
+    rationale_source STRING,
     PRIMARY KEY (id)
 );
 
-// author     — identity of the person or agent who made this decision.
-//              NULL in v1 (single-user). Populated in v2 for attribution and conflict resolution.
-// machine_id — stable identifier of the machine where the decision was made.
-//              NULL in v1. Populated in v2 to track which client last wrote a region.
+// author           — identity of the person or agent who made this decision.
+//                    NULL in v1 (single-user). Populated in v2 for attribution and conflict resolution.
+// machine_id       — stable identifier of the machine where the decision was made.
+//                    NULL in v1. Populated in v2 to track which client last wrote a region.
+// decision_type    — who initiated this decision.
+//                    Values: user | claude_inferred | claude_autonomous | blocked
+// rationale_source — how the rationale was produced.
+//                    Values: user_stated | claude_inferred | system_blocked
 
 
 // ------------------------------------------------------------

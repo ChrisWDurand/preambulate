@@ -52,6 +52,7 @@ from typing import Optional
 import kuzu
 
 from preambulate import get_db_path
+from preambulate.identity import author as get_author, get_machine_id
 
 
 # ------------------------------------------------------------
@@ -61,6 +62,17 @@ from preambulate import get_db_path
 DEFAULT_DB_PATH = get_db_path()
 
 SUPPORTED_RELS = {"INSTANTIATES", "DERIVES_FROM", "RESONATES_WITH"}
+
+# decision_type enum values (stored as STRING in Kuzu)
+DT_USER       = "user"
+DT_INFERRED   = "claude_inferred"
+DT_AUTONOMOUS = "claude_autonomous"
+DT_BLOCKED    = "blocked"
+
+# rationale_source enum values
+RS_USER_STATED     = "user_stated"
+RS_CLAUDE_INFERRED = "claude_inferred"
+RS_SYSTEM_BLOCKED  = "system_blocked"
 
 
 # ------------------------------------------------------------
@@ -73,6 +85,51 @@ def new_id() -> str:
 
 def now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# ------------------------------------------------------------
+# Decision node creation
+# ------------------------------------------------------------
+
+def create_decision_node(
+    conn: kuzu.Connection,
+    session_id: str,
+    label: str,
+    rationale: str,
+    decision_type: str,
+    rationale_source: str,
+    db_path: Optional[Path] = None,
+) -> tuple[str, "datetime"]:
+    """Create a Decision node. Returns (decision_id, timestamp)."""
+    ts = now()
+    decision_id = new_id()
+    conn.execute(
+        """
+        CREATE (d:Decision {
+            id:               $id,
+            label:            $label,
+            rationale:        $rationale,
+            timestamp:        $timestamp,
+            session_id:       $session_id,
+            decision_type:    $decision_type,
+            rationale_source: $rationale_source,
+            author:           $author,
+            machine_id:       $machine_id
+        })
+        """,
+        parameters={
+            "id":               decision_id,
+            "label":            label,
+            "rationale":        rationale,
+            "timestamp":        ts,
+            "session_id":       session_id,
+            "decision_type":    decision_type,
+            "rationale_source": rationale_source,
+            "author":           get_author(),
+            "machine_id":       get_machine_id(db_path),
+        },
+    )
+    return decision_id, ts
 
 
 # ------------------------------------------------------------
@@ -233,27 +290,13 @@ def record_decision(
     label: str,
     rationale: str,
     touched: list[str],
+    decision_type: str = DT_USER,
+    rationale_source: str = RS_USER_STATED,
+    db_path: Optional[Path] = None,
 ) -> None:
-    ts = now()
-    decision_id = new_id()
-
-    conn.execute(
-        """
-        CREATE (d:Decision {
-            id:         $id,
-            label:      $label,
-            rationale:  $rationale,
-            timestamp:  $timestamp,
-            session_id: $session_id
-        })
-        """,
-        parameters={
-            "id":         decision_id,
-            "label":      label,
-            "rationale":  rationale,
-            "timestamp":  ts,
-            "session_id": session_id,
-        },
+    decision_id, ts = create_decision_node(
+        conn, session_id, label, rationale, decision_type, rationale_source,
+        db_path=db_path,
     )
 
     anchored = []
@@ -382,6 +425,7 @@ def main() -> None:
             label=args.label,
             rationale=args.rationale,
             touched=touched,
+            db_path=args.db,
         )
 
     # 2. Ensure concepts (must precede edges that reference them)

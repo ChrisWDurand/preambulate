@@ -81,6 +81,8 @@ A specific moment in a conversation where a choice was made and anchored to one 
 | `session_id` | string | yes | Identifier of the conversation session |
 | `author` | string | no | Identity of the person or agent who made this decision. Null in v1 (single-user). Populated in v2 for attribution and conflict resolution. |
 | `machine_id` | string | no | Stable identifier of the machine where the decision was made. Null in v1. Populated in v2 to track which client last wrote a region. |
+| `decision_type` | enum | no | Who initiated this decision. Values: `user` (explicit user choice), `claude_inferred` (hook-captured artifact write), `claude_autonomous` (session lifecycle hook), `blocked` (action was blocked). |
+| `rationale_source` | enum | no | How the rationale was produced. Values: `user_stated` (user provided it), `claude_inferred` (generated from context), `system_blocked` (rationale is a block reason). |
 
 > A Decision node is the join point between a conversation thread and the graph. It connects *when* to *what*. Without `session_id` + `timestamp`, the memory has no temporal address and cannot be replayed or audited.
 >

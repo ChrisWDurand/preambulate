@@ -5,11 +5,17 @@ Graph-based project memory for Claude Code. Every session is captured as a Decis
 ## Setup
 
 ```bash
-pipx install -e .          # installs the preambulate CLI
-preambulate init           # creates memory.db and inserts seed geometry
+pipx install preambulate   # or: pipx install -e . for editable installs
+preambulate install        # writes hooks to ~/.claude/settings.json (global, one-time)
 ```
 
-Use `preambulate init --reset` to drop and recreate the database.
+That's the full setup. The `install` command merges the `SessionStart` and `PostToolUse` hooks into your global Claude Code settings so preambulate works in every repo. It is safe to run more than once — commands already present are skipped.
+
+Per-project hook files (`.claude/settings.json`) are also supported and take the same format if you prefer repo-scoped hooks.
+
+`preambulate init` is no longer required. If `memory.db` does not exist when a session starts, `preambulate capture` runs `init` automatically.
+
+Use `preambulate init --reset` to drop and recreate an existing database.
 
 For schema migrations: `preambulate export dump`, then `preambulate init --reset`, then `preambulate export restore --dump graph_export.json`.
 
@@ -17,11 +23,16 @@ For schema migrations: `preambulate export dump`, then `preambulate init --reset
 
 ## Session capture
 
-A `SessionStart` hook runs `preambulate capture` at the start of every session. It creates a `Decision` node anchored to the `geometry` Concept node and prints the memory briefing.
+Three hooks fire automatically when installed via `preambulate install`:
 
-A `PostToolUse` hook runs `preambulate artifact` and `preambulate infer` after every `Write` or `Edit` tool call. Artifact capture and import inference are automatic — no action required.
+| Hook | Trigger | Command | What it does |
+|------|---------|---------|-------------|
+| `SessionStart` | Session open | `preambulate capture` | Auto-inits `memory.db` if missing; creates session Decision node; prints briefing |
+| `SessionStart` | Session open | `preambulate sync pull` | Merges remote graph into local (runs after capture) |
+| `PostToolUse` | `Write` or `Edit` | `preambulate artifact` + `preambulate infer` | Records file edits as Artifact nodes; infers DERIVES_FROM edges from imports |
+| `Stop` | Each response | `preambulate sync push` | Pushes incremental local changes to remote (no-op if `PREAMBULATE_API_KEY` unset) |
 
-If `memory.db` does not exist both hooks skip silently — run `preambulate init` first.
+Sync hooks are no-ops when `PREAMBULATE_API_KEY` is not set — they skip cleanly without blocking the session.
 
 ## Session end
 
@@ -88,7 +99,8 @@ Kuzu constraints:
 | `preambulate/` | Python package — all CLI modules live here |
 | `preambulate/cli.py` | Dispatcher: routes `preambulate <cmd>` to the right module |
 | `preambulate/init.py` | DB init + seed geometry |
-| `preambulate/capture.py` | SessionStart hook — writes session Decision node + prints briefing |
+| `preambulate/install.py` | Writes hooks to `~/.claude/settings.json` (global one-time setup) |
+| `preambulate/capture.py` | SessionStart hook — auto-inits db if missing, writes session Decision, prints briefing |
 | `preambulate/artifact.py` | PostToolUse hook — writes Artifact + Decision on file edit |
 | `preambulate/infer.py` | PostToolUse hook — infers DERIVES_FROM edges from Python imports |
 | `preambulate/briefing.py` | Query module — `query_briefing(conn, session_id, focal_node=None)` |

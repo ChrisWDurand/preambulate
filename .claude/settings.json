@@ -8,6 +8,11 @@
             "type": "command",
             "command": "preambulate capture",
             "statusMessage": "Capturing session..."
+          },
+          {
+            "type": "command",
+            "command": "preambulate sync pull",
+            "statusMessage": "Pulling remote graph..."
           }
         ]
       }
@@ -23,6 +28,17 @@
           {
             "type": "command",
             "command": "preambulate infer"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "preambulate sync push"
           }
         ]
       }

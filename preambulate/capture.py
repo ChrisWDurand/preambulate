@@ -17,51 +17,39 @@ Usage:
 import argparse
 import os
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 
 import kuzu
 
 from preambulate import get_db_path
 from preambulate.briefing import print_briefing
+from preambulate.init import init as init_db
+from preambulate.decision import (
+    DT_AUTONOMOUS,
+    RS_CLAUDE_INFERRED,
+    create_decision_node,
+)
 
 
 def new_id() -> str:
     return str(uuid.uuid4())
 
 
-def now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 def capture_session_start(db_path: Path, session_id: str) -> None:
     if not db_path.exists():
-        print(f"preambulate: no database at {db_path}, skipping capture")
-        return
+        print(f"preambulate: no database at {db_path}, running init...")
+        init_db(db_path=db_path)
 
     db   = kuzu.Database(str(db_path))
     conn = kuzu.Connection(db)
 
-    ts          = now()
-    decision_id = new_id()
-
-    conn.execute(
-        """
-        CREATE (d:Decision {
-            id:         $id,
-            label:      $label,
-            rationale:  $rationale,
-            timestamp:  $timestamp,
-            session_id: $session_id
-        })
-        """,
-        parameters={
-            "id":         decision_id,
-            "label":      "session_start",
-            "rationale":  "Claude Code session initiated.",
-            "timestamp":  ts,
-            "session_id": session_id,
-        },
+    decision_id, ts = create_decision_node(
+        conn, session_id,
+        label="session_start",
+        rationale="Claude Code session initiated.",
+        decision_type=DT_AUTONOMOUS,
+        rationale_source=RS_CLAUDE_INFERRED,
+        db_path=db_path,
     )
 
     conn.execute(

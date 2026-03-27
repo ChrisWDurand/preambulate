@@ -31,7 +31,9 @@ _INSTRUCTIONS = (
     "to resume work — infer intent from both before asking clarifying questions. "
     "The briefing surfaces recent decisions, touched files, and the reasoning behind them. "
     "Use it. When work is complete, record decisions and propose semantic edges to keep "
-    "the graph current."
+    "the graph current. "
+    "Before summarizing branch status or outstanding work, verify by reading the relevant "
+    "files. Do not infer completeness from branch names or commit messages alone."
 )
 
 server = Server("preambulate", instructions=_INSTRUCTIONS)

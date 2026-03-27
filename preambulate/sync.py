@@ -36,7 +36,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib import request as urllib_request
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 import kuzu
 
@@ -112,6 +112,15 @@ def _push(
         print("  (dry-run — nothing sent)")
         return
 
+    MAX_PAYLOAD_BYTES = 100 * 1024 * 1024  # 100 MB
+    if len(payload) > MAX_PAYLOAD_BYTES:
+        print(
+            f"preambulate sync: push aborted — payload {len(payload):,} bytes "
+            f"exceeds {MAX_PAYLOAD_BYTES // 1024 // 1024} MB limit. "
+            f"Use 'preambulate export dump' to inspect the graph."
+        )
+        return
+
     if not api_key:
         print("preambulate sync: PREAMBULATE_API_KEY not set — aborting")
         return
@@ -168,6 +177,13 @@ def _pull(
     try:
         with urllib_request.urlopen(req, timeout=30) as resp:
             raw = resp.read()
+    except HTTPError as exc:
+        if exc.code == 404:
+            print(f"preambulate sync: no remote graph for '{project}' yet — skipping pull")
+            return
+        print(f"preambulate sync: pull failed — HTTP {exc.code} {exc.reason}")
+        record_pull(project_root, "error")
+        return
     except URLError as exc:
         print(f"preambulate sync: pull failed — {exc.reason}")
         record_pull(project_root, "error")

@@ -16,20 +16,16 @@ import json
 import os
 import sys
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 
 import kuzu
 
 from preambulate import get_db_path, get_project_dir
+from preambulate.decision import DT_INFERRED, RS_CLAUDE_INFERRED, create_decision_node
 
 
 def new_id() -> str:
     return str(uuid.uuid4())
-
-
-def now() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def infer_kind(path: str) -> str:
@@ -62,7 +58,6 @@ def capture_artifact(
 
     db   = kuzu.Database(str(db_path))
     conn = kuzu.Connection(db)
-    ts   = now()
 
     result = conn.execute(
         "MATCH (a:Artifact {path: $path}) RETURN a.id LIMIT 1",
@@ -94,24 +89,13 @@ def capture_artifact(
             },
         )
 
-    decision_id = new_id()
-    conn.execute(
-        """
-        CREATE (d:Decision {
-            id:         $id,
-            label:      $label,
-            rationale:  $rationale,
-            timestamp:  $timestamp,
-            session_id: $session_id
-        })
-        """,
-        parameters={
-            "id":         decision_id,
-            "label":      f"{tool_name.lower()}:{Path(file_path).name}",
-            "rationale":  f"{tool_name} applied to {rel_path}.",
-            "timestamp":  ts,
-            "session_id": session_id,
-        },
+    decision_id, ts = create_decision_node(
+        conn, session_id,
+        label=f"{tool_name.lower()}:{Path(file_path).name}",
+        rationale=f"{tool_name} applied to {rel_path}.",
+        decision_type=DT_INFERRED,
+        rationale_source=RS_CLAUDE_INFERRED,
+        db_path=db_path,
     )
 
     conn.execute(
