@@ -112,7 +112,7 @@ def _push(
         print("  (dry-run — nothing sent)")
         return
 
-    MAX_PAYLOAD_BYTES = 100 * 1024 * 1024  # 100 MB
+    MAX_PAYLOAD_BYTES = 10 * 1024 * 1024  # 10 MB — matches server limit
     if len(payload) > MAX_PAYLOAD_BYTES:
         print(
             f"preambulate sync: push aborted — payload {len(payload):,} bytes "
@@ -136,6 +136,25 @@ def _push(
         with urllib_request.urlopen(req, timeout=30) as resp:
             print(f"preambulate sync: push complete  status={resp.status}")
         record_push(project_root, "ok")
+    except HTTPError as exc:
+        if exc.code == 401:
+            print("preambulate sync: push failed — invalid API key (check PREAMBULATE_API_KEY)")
+        elif exc.code == 409:
+            try:
+                body = json.loads(exc.read())
+                print(f"preambulate sync: push failed — schema mismatch (server expects {body.get('expected', '?')})")
+            except Exception:
+                print("preambulate sync: push failed — schema version mismatch")
+        elif exc.code == 413:
+            try:
+                body = json.loads(exc.read())
+                limit_mb = body.get("max_bytes", 0) // 1024 // 1024
+                print(f"preambulate sync: push failed — payload too large (server limit {limit_mb} MB)")
+            except Exception:
+                print("preambulate sync: push failed — payload too large")
+        else:
+            print(f"preambulate sync: push failed — HTTP {exc.code} {exc.reason}")
+        record_push(project_root, "error")
     except URLError as exc:
         print(f"preambulate sync: push failed — {exc.reason}")
         record_push(project_root, "error")
@@ -181,7 +200,16 @@ def _pull(
         if exc.code == 404:
             print(f"preambulate sync: no remote graph for '{project}' yet — skipping pull")
             return
-        print(f"preambulate sync: pull failed — HTTP {exc.code} {exc.reason}")
+        if exc.code == 401:
+            print("preambulate sync: pull failed — invalid API key (check PREAMBULATE_API_KEY)")
+        elif exc.code == 409:
+            try:
+                body = json.loads(exc.read())
+                print(f"preambulate sync: pull failed — schema mismatch (server expects {body.get('expected', '?')})")
+            except Exception:
+                print("preambulate sync: pull failed — schema version mismatch")
+        else:
+            print(f"preambulate sync: pull failed — HTTP {exc.code} {exc.reason}")
         record_pull(project_root, "error")
         return
     except URLError as exc:
