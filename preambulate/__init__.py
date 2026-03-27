@@ -18,10 +18,6 @@ def get_project_dir() -> Path:
     """
     if env := os.environ.get("CLAUDE_PROJECT_DIR"):
         return Path(env)
-    here = Path(__file__).parent  # preambulate/ package dir
-    for candidate in [here.parent, here.parent.parent]:
-        if (candidate / "pyproject.toml").exists():
-            return candidate
     return Path.cwd()
 
 
