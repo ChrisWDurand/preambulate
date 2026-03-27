@@ -1,25 +1,26 @@
 """
 Preambulate — sync command.
 
-Packages memory.db and pushes it to api.preambulate.dev/sync.
-All sync traffic routes through that single endpoint.
+Pushes/pulls the local graph to/from api.preambulate.dev/sync using
+a JSON export format that enables per-node merge on pull.
 
-v1 backend: Cloudflare R2 (snapshot file storage).
-v2 backend: Cloudflare Durable Objects (live shared graph).
-Clients call the same endpoint; the backend is swapped transparently.
+Sync model: periodic/intermittent. Live sync is a future paid feature.
+Push sends only nodes/edges created since the last successful push
+(incremental). Pull merges the remote graph into the local one
+(accept new nodes/edges, local wins on UUID conflict — conservative
+Stage 1/2 policy; LWW upgrade lives in export.merge_remote()).
 
 Usage:
-    python sync.py push          # package and push local graph (default)
-    python sync.py pull          # pull remote graph and replace local copy
-    python sync.py               # defaults to push
+    preambulate sync push          # incremental push (default)
+    preambulate sync pull          # merge remote into local
+    preambulate sync               # defaults to push
 
-    python sync.py push --dry-run           # show what would be sent
-    python sync.py push --endpoint URL      # override endpoint (testing)
+    preambulate sync push --dry-run           # show payload size, nothing sent
+    preambulate sync push --endpoint URL      # override endpoint (testing)
+    preambulate sync push --full              # force full dump regardless of checkpoint
 
 Authentication:
     Set PREAMBULATE_API_KEY in the environment.
-    The key identifies the user and determines which project slot on the
-    backend this graph belongs to.
 
 Environment variables:
     PREAMBULATE_API_KEY     — required for push/pull (no-op if absent in dry-run)
@@ -30,16 +31,20 @@ Environment variables:
 from __future__ import annotations
 
 import argparse
-import io
+import json
 import os
-import platform
-import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib import request as urllib_request
 from urllib.error import URLError
 
+import kuzu
+
 from preambulate import get_db_path, get_project_dir
+from preambulate.export import dump_since, merge_remote
+from preambulate.identity import get_machine_id
+from preambulate.sync_state import get_last_push_dt, record_pull, record_push
+
 
 # ------------------------------------------------------------
 # Constants
@@ -51,62 +56,57 @@ DEFAULT_DB_PATH  = get_db_path()
 
 
 # ------------------------------------------------------------
-# Packaging
-# ------------------------------------------------------------
-
-def _zip_db(db_path: Path) -> bytes:
-    """
-    Zip the memory.db directory into an in-memory bytes object.
-    Kuzu databases are directories; we ship the whole thing.
-    """
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for file in sorted(db_path.rglob("*")):
-            if file.is_file():
-                zf.write(file, arcname=file.relative_to(db_path.parent))
-    return buf.getvalue()
-
-
-def _unzip_db(data: bytes, db_path: Path) -> None:
-    """Unzip a received snapshot over the local memory.db directory."""
-    import shutil
-    if db_path.exists():
-        shutil.rmtree(db_path)
-    with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        zf.extractall(db_path.parent)
-
-
-# ------------------------------------------------------------
-# HTTP
+# Helpers
 # ------------------------------------------------------------
 
 def _project_name(root: Path) -> str:
     return root.resolve().name
 
 
-def _machine_id() -> str:
-    return platform.node() or "unknown"
+def _common_headers(db_path: Path, project: str) -> dict:
+    return {
+        "Authorization":           f"Bearer {os.environ.get('PREAMBULATE_API_KEY', '')}",
+        "X-Preambulate-Project":   project,
+        "X-Preambulate-Machine":   get_machine_id(db_path),
+        "X-Preambulate-Timestamp": datetime.now(timezone.utc).isoformat(),
+        "X-Preambulate-Schema":    "2.0",
+        "User-Agent":              "preambulate-client/1.0",
+    }
 
+
+# ------------------------------------------------------------
+# Push
+# ------------------------------------------------------------
 
 def _push(
     db_path: Path,
     endpoint: str,
     api_key: str,
     dry_run: bool,
+    full: bool,
 ) -> None:
     if not db_path.exists():
         print(f"preambulate sync: no database at {db_path}")
         return
 
-    payload  = _zip_db(db_path)
-    ts       = datetime.now(timezone.utc).isoformat()
-    project  = _project_name(db_path.parent)
-    machine  = _machine_id()
+    project_root = db_path.parent
+    project      = _project_name(project_root)
 
-    print(f"preambulate sync: push  project={project}  machine={machine}")
+    since = None if full else get_last_push_dt(project_root)
+
+    db   = kuzu.Database(str(db_path))
+    conn = kuzu.Connection(db)
+    data = dump_since(conn, since)
+
+    node_total = sum(len(v) for v in data["nodes"].values())
+    edge_total = len(data["edges"])
+    payload    = json.dumps(data).encode("utf-8")
+
+    since_label = since.isoformat() if since else "beginning (full)"
+    print(f"preambulate sync: push  project={project}")
     print(f"  endpoint : {endpoint}")
-    print(f"  payload  : {len(payload):,} bytes (zipped)")
-    print(f"  timestamp: {ts}")
+    print(f"  since    : {since_label}")
+    print(f"  payload  : {len(payload):,} bytes  ({node_total} nodes, {edge_total} edges)")
 
     if dry_run:
         print("  (dry-run — nothing sent)")
@@ -116,25 +116,25 @@ def _push(
         print("preambulate sync: PREAMBULATE_API_KEY not set — aborting")
         return
 
+    headers = {**_common_headers(db_path, project), "Content-Type": "application/json"}
     req = urllib_request.Request(
         url=f"{endpoint}?op=push",
         data=payload,
         method="POST",
-        headers={
-            "Authorization":            f"Bearer {api_key}",
-            "Content-Type":             "application/octet-stream",
-            "X-Preambulate-Project":    project,
-            "X-Preambulate-Machine":    machine,
-            "X-Preambulate-Timestamp":  ts,
-        },
+        headers=headers,
     )
     try:
         with urllib_request.urlopen(req, timeout=30) as resp:
             print(f"preambulate sync: push complete  status={resp.status}")
+        record_push(project_root, "ok")
     except URLError as exc:
         print(f"preambulate sync: push failed — {exc.reason}")
-        print("  (backend not yet live — this is expected for v1 development)")
+        record_push(project_root, "error")
 
+
+# ------------------------------------------------------------
+# Pull
+# ------------------------------------------------------------
 
 def _pull(
     db_path: Path,
@@ -142,10 +142,14 @@ def _pull(
     api_key: str,
     dry_run: bool,
 ) -> None:
-    project = _project_name(db_path.parent)
-    machine = _machine_id()
+    if not db_path.exists():
+        print(f"preambulate sync: no database at {db_path}")
+        return
 
-    print(f"preambulate sync: pull  project={project}  machine={machine}")
+    project_root = db_path.parent
+    project      = _project_name(project_root)
+
+    print(f"preambulate sync: pull  project={project}")
     print(f"  endpoint : {endpoint}")
 
     if dry_run:
@@ -159,19 +163,30 @@ def _pull(
     req = urllib_request.Request(
         url=f"{endpoint}?op=pull&project={project}",
         method="GET",
-        headers={
-            "Authorization":         f"Bearer {api_key}",
-            "X-Preambulate-Machine": machine,
-        },
+        headers=_common_headers(db_path, project),
     )
     try:
         with urllib_request.urlopen(req, timeout=30) as resp:
-            data = resp.read()
-        _unzip_db(data, db_path)
-        print(f"preambulate sync: pull complete  {len(data):,} bytes received")
+            raw = resp.read()
     except URLError as exc:
         print(f"preambulate sync: pull failed — {exc.reason}")
-        print("  (backend not yet live — this is expected for v1 development)")
+        record_pull(project_root, "error")
+        return
+
+    try:
+        remote = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(f"preambulate sync: pull failed — invalid JSON response ({exc})")
+        record_pull(project_root, "error")
+        return
+
+    db   = kuzu.Database(str(db_path))
+    conn = kuzu.Connection(db)
+    added, skipped, edges = merge_remote(conn, remote)
+
+    print(f"preambulate sync: pull complete")
+    print(f"  {added} nodes added, {skipped} nodes skipped, {edges} edges added")
+    record_pull(project_root, "ok")
 
 
 # ------------------------------------------------------------
@@ -180,7 +195,7 @@ def _pull(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Push or pull the preambulate graph snapshot.",
+        description="Push or pull the preambulate graph.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -190,12 +205,10 @@ def main() -> None:
         default="push",
         help="Operation: push (default) or pull.",
     )
-    parser.add_argument("--db",       type=Path, default=DEFAULT_DB_PATH)
+    parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
     parser.add_argument(
         "--endpoint",
-        default=(
-            os.environ.get("PREAMBULATE_ENDPOINT") or DEFAULT_ENDPOINT
-        ),
+        default=os.environ.get("PREAMBULATE_ENDPOINT") or DEFAULT_ENDPOINT,
         help="Override the sync endpoint.",
     )
     parser.add_argument(
@@ -208,10 +221,15 @@ def main() -> None:
         action="store_true",
         help="Show what would be sent without making any network calls.",
     )
+    parser.add_argument(
+        "--full",
+        action="store_true",
+        help="Force a full dump regardless of sync checkpoint (push only).",
+    )
     args = parser.parse_args()
 
     if args.op == "push":
-        _push(args.db, args.endpoint, args.api_key, args.dry_run)
+        _push(args.db, args.endpoint, args.api_key, args.dry_run, args.full)
     else:
         _pull(args.db, args.endpoint, args.api_key, args.dry_run)
 
