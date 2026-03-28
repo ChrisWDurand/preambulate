@@ -12,6 +12,9 @@ dependencies = ["kuzu==0.4.2", "mcp"]
 [project.urls]
 Homepage = "https://preambulate.dev"
 
+[tool.setuptools.packages.find]
+include = ["preambulate*"]
+
 [tool.setuptools.package-data]
 preambulate = ["*.cypher"]
 
