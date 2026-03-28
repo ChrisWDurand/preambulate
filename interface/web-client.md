@@ -132,6 +132,28 @@ _Answer these in `preambulate-web/interface/client-web.md`._
 Is the signup page built and deployed? Can a new user visit it, authenticate
 via GitHub OAuth, and receive a `prm_live_` API key? If not, what's missing?
 
+**Q8: Payment gating**
+Open signup with no rate limiting means a single user could spawn hundreds of
+agents, each pushing on every response, and flood the backend before we notice.
+Two guards are needed:
+
+- **v1 — manual authorization flag**: Add `is_authorized` boolean to the D1
+  `users` table. Worker checks this flag before accepting any push or pull.
+  Unauthorized users get `402` with body `{ "error": "account_not_authorized" }`.
+  Operator sets the flag manually per approved user. No Stripe required yet.
+  Client should surface 402 with message: "Sync not authorized — contact
+  preambulate.dev to activate your account."
+
+- **v1 — edge rate limiting**: Apply a Cloudflare Rate Limiting rule to the Worker
+  capping pushes per API key per hour (suggested: 120/hour = 2/minute sustained).
+  No Worker code change needed — configured at the Cloudflare edge.
+
+**Q9: Agent authorization (v2 design)**
+One API key should not authorize unlimited agent children. Design question for v2:
+should agents share a push quota with the parent key, or get sub-keys with
+individual limits? `X-Preambulate-Machine` (currently ignored) is the natural
+identity carrier for per-agent tracking. Propose a design in `client-web.md`.
+
 ---
 
 ## Resolved Questions
@@ -140,7 +162,8 @@ via GitHub OAuth, and receive a `prm_live_` API key? If not, what's missing?
 |---|---|
 | Storage collision risk | Not applicable in v1 — single tenant |
 | Per-user keys | v2 |
-| Rate limiting | None in v1 — Cloudflare free tier is practical ceiling |
-| X-Preambulate-Machine server use | Fully ignored in v1, reserved for future |
+| Rate limiting | None in v1 — Cloudflare free tier is practical ceiling (Q8 supersedes this) |
+| X-Preambulate-Machine server use | Fully ignored in v1, reserved for agent authorization in v2 |
 | 403 per-project auth | v2 |
 | Schema mismatch status code | Already 409 — confirmed correct |
+| Signup page | Built and deployed — GitHub OAuth, prm_live_ key, resolved 2026-03-27 |
