@@ -124,6 +124,16 @@ with userId derived from a per-user key lookup table.
 
 ---
 
+## Questions for preambulate-web
+
+_Answer these in `preambulate-web/interface/client-web.md`._
+
+**Q7: Signup page status**
+Is the signup page built and deployed? Can a new user visit it, authenticate
+via GitHub OAuth, and receive a `prm_live_` API key? If not, what's missing?
+
+---
+
 ## Resolved Questions
 
 | Question | Answer |
