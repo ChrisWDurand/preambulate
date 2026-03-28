@@ -70,6 +70,7 @@ does not replace. First-write-wins on id collision. Edge dedup key:
 | `400` | Missing required header or bad op | Print error body |
 | `401` | Bad or missing API key | Print "Invalid API key — check PREAMBULATE_API_KEY" |
 | `409` | Schema mismatch | Print `expected` field from body, abort |
+| `402` | Account not authorized | Print "Sync not authorized — visit preambulate.dev to activate your account" |
 | `413` | Payload too large | Print `max_bytes` from body, abort |
 
 ---
@@ -84,6 +85,7 @@ does not replace. First-write-wins on id collision. Edge dedup key:
 | `404` | No remote graph yet | No-op — normal for new projects |
 | `400` | Missing project / bad op | Print error body |
 | `401` | Bad or missing API key | Print actionable message, abort |
+| `402` | Account not authorized | Print "Sync not authorized — visit preambulate.dev to activate your account" |
 | `409` | Schema mismatch | Print `expected` field from body, abort |
 
 Pull response body (200): full merged graph as JSON. Includes `ETag` header
@@ -167,3 +169,11 @@ identity carrier for per-agent tracking. Propose a design in `client-web.md`.
 | 403 per-project auth | v2 |
 | Schema mismatch status code | Already 409 — confirmed correct |
 | Signup page | Built and deployed — GitHub OAuth, prm_live_ key, resolved 2026-03-27 |
+| Payment gating | is_authorized flag in D1, 402 response, edge rate limiting at 120/hour |
+| Agent authorization | Sub-key model designed, deferred to v2. X-Preambulate-Machine is the identity carrier |
+
+## Known v1 Limitations
+
+**Last-sign-in-wins**: Each new GitHub OAuth sign-in revokes all previous keys. A user
+who authenticates from a second device loses their first device's key silently. Needs
+either session management or a warning on the key display page before wider rollout.

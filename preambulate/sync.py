@@ -139,6 +139,8 @@ def _push(
     except HTTPError as exc:
         if exc.code == 401:
             print("preambulate sync: push failed — invalid API key (check PREAMBULATE_API_KEY)")
+        elif exc.code == 402:
+            print("preambulate sync: push failed — sync not authorized (visit preambulate.dev to activate your account)")
         elif exc.code == 409:
             try:
                 body = json.loads(exc.read())
@@ -202,6 +204,8 @@ def _pull(
             return
         if exc.code == 401:
             print("preambulate sync: pull failed — invalid API key (check PREAMBULATE_API_KEY)")
+        elif exc.code == 402:
+            print("preambulate sync: pull failed — sync not authorized (visit preambulate.dev to activate your account)")
         elif exc.code == 409:
             try:
                 body = json.loads(exc.read())
