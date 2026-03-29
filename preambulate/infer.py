@@ -32,9 +32,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-import kuzu
-
 from preambulate import get_db_path, get_project_dir
+from preambulate.graph import GraphConnection, open_graph
 
 
 # ------------------------------------------------------------
@@ -140,13 +139,13 @@ def _resolve_relative(module: str, level: int, file_path: Path, root: Path) -> P
 # Graph writes
 # ------------------------------------------------------------
 
-def _ensure_artifact(conn: kuzu.Connection, rel_path: str) -> None:
+def _ensure_artifact(conn: GraphConnection, rel_path: str) -> None:
     """Create an Artifact node if one does not already exist for this path."""
-    r = conn.execute(
+    rows = conn.execute(
         "MATCH (a:Artifact {path: $path}) RETURN a.id LIMIT 1",
         parameters={"path": rel_path},
     )
-    if r.has_next():
+    if rows:
         return
     conn.execute(
         """
@@ -166,19 +165,19 @@ def _ensure_artifact(conn: kuzu.Connection, rel_path: str) -> None:
     )
 
 
-def _ensure_derives_from(conn: kuzu.Connection, src: str, tgt: str) -> bool:
+def _ensure_derives_from(conn: GraphConnection, src: str, tgt: str) -> bool:
     """
     Create a DERIVES_FROM edge src → tgt if one does not already exist.
     Returns True if a new edge was created.
     """
-    r = conn.execute(
+    rows = conn.execute(
         """
         MATCH (a:Artifact {path: $src})-[r:DERIVES_FROM]->(b:Artifact {path: $tgt})
         RETURN COUNT(*) AS c
         """,
         parameters={"src": src, "tgt": tgt},
     )
-    count = r.get_next()[0] if r.has_next() else 0
+    count = rows[0][0] if rows else 0
     if count > 0:
         return False
 
@@ -211,7 +210,7 @@ def _ensure_derives_from(conn: kuzu.Connection, src: str, tgt: str) -> bool:
 # Per-file inference
 # ------------------------------------------------------------
 
-def infer_file(conn: kuzu.Connection, file_path: Path, root: Path) -> int:
+def infer_file(conn: GraphConnection, file_path: Path, root: Path) -> int:
     """
     Parse one Python file and write any new DERIVES_FROM edges.
     Returns the number of new edges created.
@@ -267,7 +266,7 @@ def infer_file(conn: kuzu.Connection, file_path: Path, root: Path) -> int:
 # Full scan
 # ------------------------------------------------------------
 
-def infer_all(conn: kuzu.Connection, root: Path) -> int:
+def infer_all(conn: GraphConnection, root: Path) -> int:
     total = 0
     for py_file in sorted(root.rglob("*.py")):
         if not _should_skip(py_file, root):
@@ -314,8 +313,7 @@ def main() -> None:
         if file_path is None:
             return
 
-    db   = kuzu.Database(str(args.db))
-    conn = kuzu.Connection(db)
+    conn = open_graph(args.db)
 
     if file_path:
         infer_file(conn, Path(file_path), args.root)

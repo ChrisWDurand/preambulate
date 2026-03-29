@@ -38,10 +38,9 @@ from pathlib import Path
 from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
 
-import kuzu
-
 from preambulate import get_db_path, get_project_dir
 from preambulate.export import dump_since, merge_remote
+from preambulate.graph import open_graph
 from preambulate.identity import get_machine_id
 from preambulate.keystore import decrypt, encrypt, key_exists, replace_key
 from preambulate.sync_state import get_last_push_dt, record_pull, record_push
@@ -95,8 +94,7 @@ def _push(
 
     since = None if full else get_last_push_dt(project_root)
 
-    db   = kuzu.Database(str(db_path))
-    conn = kuzu.Connection(db)
+    conn = open_graph(db_path)
     data = dump_since(conn, since)
 
     node_total = sum(len(v) for v in data["nodes"].values())
@@ -248,8 +246,7 @@ def _pull(
         record_pull(project_root, "error")
         return
 
-    db   = kuzu.Database(str(db_path))
-    conn = kuzu.Connection(db)
+    conn = open_graph(db_path)
     added, skipped, edges = merge_remote(conn, remote)
 
     print(f"preambulate sync: pull complete")

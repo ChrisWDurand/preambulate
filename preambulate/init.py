@@ -17,9 +17,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-import kuzu
-
 from preambulate import get_db_path
+from preambulate.graph import GraphConnection, open_graph
 from preambulate.identity import get_machine_id
 from preambulate.install import ensure_gitignore
 from preambulate.keystore import generate_key, key_exists
@@ -36,7 +35,7 @@ def now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def run_ddl(conn: kuzu.Connection, ddl: str) -> None:
+def run_ddl(conn: GraphConnection, ddl: str) -> None:
     """Execute each DDL statement individually, skipping blank lines and comments."""
     clean_lines = [
         line for line in ddl.splitlines()
@@ -56,7 +55,7 @@ def create_schema(conn: kuzu.Connection) -> None:
     print(f"  schema created from {schema_file.name}")
 
 
-def insert_seed(conn: kuzu.Connection) -> dict:
+def insert_seed(conn: GraphConnection) -> dict:
     ts             = now()
     seed_id        = new_id()
     geometry_id    = new_id()
@@ -101,7 +100,7 @@ def insert_seed(conn: kuzu.Connection) -> dict:
     }
 
 
-def insert_founding_edges(conn: kuzu.Connection, ids: dict) -> None:
+def insert_founding_edges(conn: GraphConnection, ids: dict) -> None:
     ts   = now()
     base = {"weight": 1.0, "traversal_cost": 0.0, "created_at": ts}
 
@@ -201,7 +200,7 @@ def _ensure_key(db_path: Path) -> None:
         print("  keep this key safe — it is required to decrypt synced graphs")
 
 
-def init(db_path: Path, reset: bool = False) -> kuzu.Database:
+def init(db_path: Path, reset: bool = False) -> GraphConnection:
     if reset and db_path.exists():
         import shutil
         shutil.rmtree(db_path)
@@ -210,20 +209,19 @@ def init(db_path: Path, reset: bool = False) -> kuzu.Database:
     if db_path.exists() and not reset:
         print(f"database already exists at {db_path}")
         print("  use --reset to drop and recreate")
-        db = kuzu.Database(str(db_path))
+        conn = open_graph(db_path)
         _ensure_key(db_path)
-        return db
+        return conn
 
     print(f"initializing database at {db_path}")
-    db   = kuzu.Database(str(db_path))
-    conn = kuzu.Connection(db)
+    conn = open_graph(db_path)
     create_schema(conn)
     ids = insert_seed(conn)
     insert_founding_edges(conn, ids)
     _ensure_key(db_path)
     ensure_gitignore(db_path.parent)
     print("done.")
-    return db
+    return conn
 
 
 def main() -> None:

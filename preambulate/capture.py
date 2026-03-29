@@ -19,10 +19,9 @@ import os
 import uuid
 from pathlib import Path
 
-import kuzu
-
 from preambulate import get_db_path
 from preambulate.briefing import print_briefing
+from preambulate.graph import open_graph
 from preambulate.init import init as init_db
 from preambulate.decision import (
     DT_AUTONOMOUS,
@@ -40,8 +39,7 @@ def capture_session_start(db_path: Path, session_id: str) -> None:
         print(f"preambulate: no database at {db_path}, running init...")
         init_db(db_path=db_path)
 
-    db   = kuzu.Database(str(db_path))
-    conn = kuzu.Connection(db)
+    conn = open_graph(db_path)
 
     decision_id, ts = create_decision_node(
         conn, session_id,

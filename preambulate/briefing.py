@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    import kuzu
+    from preambulate.graph import GraphConnection
 
 
 _FOOTER = "────────────────────────────────────────────────────────\n"
@@ -54,7 +54,7 @@ def _is_boring(rationale: str | None) -> bool:
 # ------------------------------------------------------------
 
 def query_briefing(
-    conn: "kuzu.Connection",
+    conn: "GraphConnection",
     current_session_id: str,
     focal_node: str | None = None,
 ) -> list[str]:
@@ -78,7 +78,7 @@ def query_briefing(
 
 
 def print_briefing(
-    conn: "kuzu.Connection",
+    conn: "GraphConnection",
     current_session_id: str,
     focal_node: str | None = None,
 ) -> None:
@@ -91,14 +91,14 @@ def print_briefing(
 # Recency mode
 # ------------------------------------------------------------
 
-def _recency_briefing(conn: "kuzu.Connection", current_session_id: str) -> list[str]:
+def _recency_briefing(conn: "GraphConnection", current_session_id: str) -> list[str]:
     lines = ["\n── preambulate memory briefing ─────────────────────────────"]
     lines.extend(_top_active_nodes(conn, current_session_id))
     lines.append(_FOOTER)
     return lines
 
 
-def _top_active_nodes(conn: "kuzu.Connection", current_session_id: str) -> list[str]:
+def _top_active_nodes(conn: "GraphConnection", current_session_id: str) -> list[str]:
     """
     Return top N recently-active artifacts, ranked by total decision-anchor count
     (connection density = proximity proxy), then by most-recently touched.
@@ -106,7 +106,7 @@ def _top_active_nodes(conn: "kuzu.Connection", current_session_id: str) -> list[
     """
     lines = ["\nRecently active:"]
 
-    r = conn.execute(
+    rows = conn.execute(
         f"""
         MATCH (d:Decision)-[:ANCHORS]->(a:Artifact)
         WHERE d.session_id <> $current_session_id
@@ -117,10 +117,6 @@ def _top_active_nodes(conn: "kuzu.Connection", current_session_id: str) -> list[
         """,
         parameters={"current_session_id": current_session_id},
     )
-
-    rows = []
-    while r.has_next():
-        rows.append(r.get_next())
 
     if not rows:
         lines.append("  (no prior activity)")
@@ -138,8 +134,8 @@ def _top_active_nodes(conn: "kuzu.Connection", current_session_id: str) -> list[
             parameters={"id": artifact_id},
         )
         d_label = d_rationale = d_sid = None
-        if r2.has_next():
-            d_label, d_rationale, _, d_sid = r2.get_next()
+        if r2:
+            d_label, d_rationale, _, d_sid = r2[0]
 
         short_sid = (d_sid or "")[:8]
         lines.append(f"  {path}  ({kind}, {anchor_count} anchors)")
@@ -154,7 +150,7 @@ def _top_active_nodes(conn: "kuzu.Connection", current_session_id: str) -> list[
 # Proximity mode
 # ------------------------------------------------------------
 
-def _proximity_briefing(conn: "kuzu.Connection", focal_node: str) -> list[str]:
+def _proximity_briefing(conn: "GraphConnection", focal_node: str) -> list[str]:
     node = _resolve_focal(conn, focal_node)
     if node is None:
         return [
@@ -173,27 +169,27 @@ def _proximity_briefing(conn: "kuzu.Connection", focal_node: str) -> list[str]:
 
 
 def _resolve_focal(
-    conn: "kuzu.Connection",
+    conn: "GraphConnection",
     ref: str,
 ) -> tuple[str, str, str, str] | None:
     """
     Resolve a string to (node_type, node_id, display_label, detail).
     Tries Artifact.path first, then Concept.label.
     """
-    r = conn.execute(
+    rows = conn.execute(
         "MATCH (a:Artifact {path: $ref}) RETURN a.id, a.label, a.kind LIMIT 1",
         parameters={"ref": ref},
     )
-    if r.has_next():
-        nid, label, kind = r.get_next()
+    if rows:
+        nid, label, kind = rows[0]
         return ("Artifact", nid, label, kind)
 
-    r = conn.execute(
+    rows = conn.execute(
         "MATCH (c:Concept {label: $ref}) RETURN c.id, c.label, c.definition LIMIT 1",
         parameters={"ref": ref},
     )
-    if r.has_next():
-        nid, label, definition = r.get_next()
+    if rows:
+        nid, label, definition = rows[0]
         detail = (definition or "")[:60] or "no definition"
         return ("Concept", nid, label, detail)
 
@@ -201,7 +197,7 @@ def _resolve_focal(
 
 
 def _focal_connections(
-    conn: "kuzu.Connection",
+    conn: "GraphConnection",
     node_type: str,
     node_id: str,
 ) -> list[str]:
@@ -210,9 +206,8 @@ def _focal_connections(
     rows: list[tuple[str, str, str, str]] = []  # (direction, rel, label, kind)
 
     def _collect(query: str) -> None:
-        r = conn.execute(query, parameters={"id": node_id})
-        while r.has_next():
-            rows.append(tuple(r.get_next()))  # type: ignore[arg-type]
+        for row in conn.execute(query, parameters={"id": node_id}):
+            rows.append(tuple(row))  # type: ignore[arg-type]
 
     if node_type == "Artifact":
         # Outbound: what this file imports / derives from
@@ -279,9 +274,8 @@ def _focal_connections(
 
 
 def main() -> None:
-    import kuzu
-
     from preambulate import get_db_path
+    from preambulate.graph import open_graph
 
     parser = argparse.ArgumentParser(description="Print the preambulate memory briefing.")
     parser.add_argument("--db", type=Path, default=get_db_path())
@@ -297,19 +291,18 @@ def main() -> None:
         print(f"preambulate: no database at {args.db}, skipping briefing")
         return
 
-    db   = kuzu.Database(str(args.db))
-    conn = kuzu.Connection(db)
+    conn = open_graph(args.db)
     print_briefing(conn, current_session_id="", focal_node=args.focal)
 
 
 def _focal_decisions(
-    conn: "kuzu.Connection",
+    conn: "GraphConnection",
     node_type: str,
     node_id: str,
 ) -> list[str]:
     """Return lines for recent Decisions that ANCHOR to the focal node."""
     lines = ["\nRecent decisions here:"]
-    r = conn.execute(
+    dec_rows = conn.execute(
         f"""
         MATCH (d:Decision)-[:ANCHORS]->(n:{node_type} {{id: $id}})
         WHERE d.label <> 'session_start'
@@ -319,14 +312,12 @@ def _focal_decisions(
         """,
         parameters={"id": node_id},
     )
-    found = False
-    while r.has_next():
-        found = True
-        label, rationale, ts, sid = r.get_next()
+    if not dec_rows:
+        lines.append("  (none)")
+        return lines
+    for label, rationale, ts, sid in dec_rows:
         short_sid = (sid or "")[:8]
         lines.append(f"  [{short_sid}] {ts}  {label}")
         if not _is_boring(rationale):
             lines.append(f"    → {rationale}")
-    if not found:
-        lines.append("  (none)")
     return lines
