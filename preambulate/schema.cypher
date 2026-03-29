@@ -40,6 +40,18 @@ CREATE NODE TABLE Artifact (
 
 // kind must be one of: file | module | document | output | external
 
+CREATE NODE TABLE Cluster (
+    id               STRING,
+    label            STRING,
+    algorithm        STRING,
+    phase            STRING,
+    created_at       TIMESTAMP,
+    membership_count INT64,
+    PRIMARY KEY (id)
+);
+
+// phase must be one of: A (file-level) | B (symbol-level)
+
 CREATE NODE TABLE Context (
     id      STRING,
     label   STRING,
@@ -127,6 +139,7 @@ CREATE REL TABLE GROUP GOVERNS (
     FROM Concept  TO Concept,
     FROM Concept  TO Artifact,
     FROM Artifact TO Artifact,
+    FROM Cluster  TO Artifact,
     FROM Context  TO Concept,
     FROM Context  TO Artifact,
     weight          DOUBLE,
@@ -195,6 +208,7 @@ CREATE REL TABLE GROUP INSTANTIATES (
 CREATE REL TABLE GROUP SUPERSEDES (
     FROM Concept     TO Concept,
     FROM Artifact    TO Artifact,
+    FROM Cluster     TO Cluster,
     FROM Context     TO Context,
     FROM Observation TO Observation,
     FROM Decision    TO Decision,

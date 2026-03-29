@@ -45,9 +45,15 @@ DEFAULT_DB_PATH = get_db_path()
 
 # Directories to never descend into during a full scan.
 _SKIP_DIRS = {
-    ".venv", "venv", "__pycache__", ".git",
+    "__pycache__", ".git",
     "node_modules", ".mypy_cache", ".pytest_cache", ".tox",
+    "site-packages",  # installed packages inside any venv
 }
+# Any path component starting with these prefixes is skipped.
+# Catches: venv, .venv, venv310, .venv310, venv38, etc.
+_SKIP_DIR_PREFIXES = ("venv", ".venv")
+# Any path component ending with these suffixes is skipped.
+_SKIP_DIR_SUFFIXES = (".egg-info", ".dist-info")
 
 
 # ------------------------------------------------------------
@@ -76,7 +82,14 @@ def _should_skip(file_path: Path, root: Path) -> bool:
         rel = file_path.relative_to(root)
     except ValueError:
         return True
-    return any(part in _SKIP_DIRS for part in rel.parts)
+    for part in rel.parts:
+        if part in _SKIP_DIRS:
+            return True
+        if part.startswith(_SKIP_DIR_PREFIXES):
+            return True
+        if part.endswith(_SKIP_DIR_SUFFIXES):
+            return True
+    return False
 
 
 # ------------------------------------------------------------
@@ -104,14 +117,73 @@ def _extract_imports(tree: ast.AST, file_path: Path, root: Path) -> list[Path]:
     return results
 
 
+def _extract_import_maps(
+    tree: ast.AST,
+    file_path: Path,
+    root: Path,
+) -> tuple[dict[str, list[str]], dict[str, str]]:
+    """
+    Return two maps for cross-file call resolution:
+
+    from_imports  — {rel_path: [name, ...]}
+        Names brought into local scope via `from X import name`.
+        Star imports recorded as ["*"] — treated as unresolvable.
+
+    module_aliases — {local_alias: rel_path}
+        Module references via `import X` or `import X as Y`.
+        Enables resolution of qualified calls like `graph.open_graph()`.
+    """
+    from_imports:   dict[str, list[str]] = {}
+    module_aliases: dict[str, str]       = {}
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                resolved = _resolve_absolute(alias.name, root)
+                if not resolved:
+                    continue
+                try:
+                    rel = str(resolved.relative_to(root))
+                except ValueError:
+                    continue
+                local_name = alias.asname or alias.name.split(".")[0]
+                module_aliases[local_name] = rel
+
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            level  = node.level
+            if level > 0:
+                resolved = _resolve_relative(module, level, file_path, root)
+            else:
+                resolved = _resolve_absolute(module, root)
+            if not resolved:
+                continue
+            try:
+                rel = str(resolved.relative_to(root))
+            except ValueError:
+                continue
+            for alias in node.names:
+                name = alias.asname or alias.name
+                from_imports.setdefault(rel, []).append(name)
+
+    return from_imports, module_aliases
+
+
 def _resolve_absolute(module_name: str, root: Path) -> Path | None:
-    """Resolve a dotted module name to a project-local file, or None."""
-    top = module_name.split(".")[0]
-    if not top:
+    """
+    Resolve a dotted module name to the most-specific project-local file.
+
+    Tries progressively shorter suffixes so that `preambulate.graph` resolves
+    to `preambulate/graph.py` rather than falling back to `preambulate/__init__.py`.
+    """
+    parts = module_name.split(".")
+    if not parts[0]:
         return None
-    for candidate in (root / f"{top}.py", root / top / "__init__.py"):
-        if candidate.exists():
-            return candidate
+    for length in range(len(parts), 0, -1):
+        base = root.joinpath(*parts[:length])
+        for candidate in (base.with_suffix(".py"), base / "__init__.py"):
+            if candidate.exists():
+                return candidate
     return None
 
 
@@ -192,6 +264,85 @@ def _extract_within_file_calls(
                     calls.append((caller, callee))
 
     return calls
+
+
+# ------------------------------------------------------------
+# Cross-file call extraction
+# ------------------------------------------------------------
+
+def _extract_cross_file_calls(
+    tree: ast.AST,
+    defined_names: set[str],
+    from_imports: dict[str, list[str]],
+    module_aliases: dict[str, str],
+    symbol_index: dict[str, str],
+) -> list[tuple[str, str, str]]:
+    """
+    Return (caller_name, callee_name, callee_rel_path) for calls that cross
+    module boundaries.  Within-file calls (callee in defined_names) are skipped.
+    """
+    # Reverse map: bare name → files that export it via `from X import name`
+    name_to_files: dict[str, list[str]] = {}
+    for rel_path, names in from_imports.items():
+        for name in names:
+            if name != "*":
+                name_to_files.setdefault(name, []).append(rel_path)
+
+    results: list[tuple[str, str, str]] = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        caller_name = node.name
+
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Call):
+                continue
+
+            callee_name: str | None = None
+            callee_file: str | None = None
+
+            if isinstance(child.func, ast.Name):
+                name = child.func.id
+                if name in defined_names:
+                    continue
+                sources = name_to_files.get(name, [])
+                if len(sources) == 1:
+                    callee_name = name
+                    callee_file = sources[0]
+                elif not sources and name in symbol_index:
+                    callee_name = name
+                    callee_file = symbol_index[name]
+
+            elif isinstance(child.func, ast.Attribute):
+                attr = child.func.attr
+                if isinstance(child.func.value, ast.Name):
+                    alias = child.func.value.id
+                    if alias in module_aliases:
+                        callee_name = attr
+                        callee_file = module_aliases[alias]
+
+            if callee_name and callee_file and callee_name != caller_name:
+                results.append((caller_name, callee_name, callee_file))
+
+    return results
+
+
+def _build_symbol_index(conn: GraphConnection) -> dict[str, str]:
+    """Return {base_symbol_name: rel_file_path} from all symbol Artifacts in the graph."""
+    rows = conn.execute(
+        "MATCH (a:Artifact) WHERE a.path CONTAINS '::' RETURN a.path"
+    )
+    index: dict[str, str] = {}
+    for row in rows:
+        path = row[0]
+        if not path or "::" not in path:
+            continue
+        file_part, sym_part = path.split("::", 1)
+        base = sym_part.split(".")[-1]
+        if base not in index:  # first-write-wins on name collision
+            index[base] = file_part
+    return index
 
 
 # ------------------------------------------------------------
@@ -374,10 +525,19 @@ def _ensure_derives_from(conn: GraphConnection, src: str, tgt: str) -> bool:
 # Per-file inference
 # ------------------------------------------------------------
 
-def infer_file(conn: GraphConnection, file_path: Path, root: Path) -> int:
+def infer_file(
+    conn: GraphConnection,
+    file_path: Path,
+    root: Path,
+    symbol_index: dict[str, str] | None = None,
+) -> int:
     """
     Parse one Python file and write any new DERIVES_FROM edges.
     Returns the number of new edges created.
+
+    symbol_index — {base_name: rel_file_path} built from existing symbol
+    Artifacts in the graph.  When provided, Phase 4 (cross-file call
+    resolution) runs.  Omit or pass None to skip Phase 4.
     """
     if file_path.suffix.lower() != ".py":
         return 0
@@ -424,12 +584,13 @@ def infer_file(conn: GraphConnection, file_path: Path, root: Path) -> int:
     for kind, name in symbols:
         sym_path = _ensure_symbol_artifact(conn, rel_src, name, kind)
         _ensure_governs(conn, rel_src, sym_path)
-        # Index by base name for call resolution
         defined_names.add(name.split(".")[-1])
+
+    # Build sym_map once — used by both Phase 3 and Phase 4
+    sym_map = {name.split(".")[-1]: _symbol_path(rel_src, name) for _, name in symbols}
 
     # --- Phase 3: within-file call resolution — caller -[DERIVES_FROM]-> callee ---
     if len(symbols) > 1:
-        sym_map = {name.split(".")[-1]: _symbol_path(rel_src, name) for _, name in symbols}
         for caller_name, callee_name in _extract_within_file_calls(tree, defined_names):
             caller_path = sym_map.get(caller_name)
             callee_path = sym_map.get(callee_name)
@@ -442,6 +603,30 @@ def infer_file(conn: GraphConnection, file_path: Path, root: Path) -> int:
                     )
                     created += 1
 
+    # --- Phase 4: cross-file call resolution ---
+    if symbol_index is not None and sym_map:
+        from_imports, module_aliases = _extract_import_maps(tree, file_path, root)
+        for caller_name, callee_name, callee_file in _extract_cross_file_calls(
+            tree, defined_names, from_imports, module_aliases, symbol_index
+        ):
+            caller_path = sym_map.get(caller_name)
+            if not caller_path:
+                continue
+            callee_sym_path = _symbol_path(callee_file, callee_name)
+            rows = conn.execute(
+                "MATCH (a:Artifact {path: $path}) RETURN a.id LIMIT 1",
+                parameters={"path": callee_sym_path},
+            )
+            if not rows:
+                continue
+            if _ensure_symbol_derives_from(conn, caller_path, callee_sym_path):
+                print(
+                    f"preambulate: {caller_name}"
+                    f" -[DERIVES_FROM]-> {callee_name}"
+                    f"  ({Path(rel_src).name} → {Path(callee_file).name})"
+                )
+                created += 1
+
     return created
 
 
@@ -450,10 +635,11 @@ def infer_file(conn: GraphConnection, file_path: Path, root: Path) -> int:
 # ------------------------------------------------------------
 
 def infer_all(conn: GraphConnection, root: Path) -> int:
+    symbol_index = _build_symbol_index(conn)
     total = 0
     for py_file in sorted(root.rglob("*.py")):
         if not _should_skip(py_file, root):
-            total += infer_file(conn, py_file, root)
+            total += infer_file(conn, py_file, root, symbol_index=symbol_index)
     return total
 
 
@@ -499,7 +685,8 @@ def main() -> None:
     conn = open_graph(args.db)
 
     if file_path:
-        infer_file(conn, Path(file_path), args.root)
+        symbol_index = _build_symbol_index(conn)
+        infer_file(conn, Path(file_path), args.root, symbol_index=symbol_index)
     else:
         created = infer_all(conn, args.root)
         print(f"preambulate: import inference complete — {created} new edge(s)")

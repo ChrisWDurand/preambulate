@@ -38,12 +38,13 @@ from preambulate.graph import GraphConnection, open_graph
 DEFAULT_DB_PATH = get_db_path()
 DEFAULT_DUMP     = Path("graph_export.json")
 
-NODE_TYPES = ["Seed", "Concept", "Artifact", "Context", "Observation", "Decision"]
+NODE_TYPES = ["Seed", "Concept", "Artifact", "Cluster", "Context", "Observation", "Decision"]
 
 NODE_PROPS = {
     "Seed":        ["id", "phrase", "created_at"],
     "Concept":     ["id", "label", "definition", "depth"],
     "Artifact":    ["id", "label", "path", "kind"],
+    "Cluster":     ["id", "label", "algorithm", "phase", "created_at", "membership_count"],
     "Context":     ["id", "label", "active"],
     "Observation": ["id", "label", "source", "confidence"],
     "Decision":    ["id", "label", "rationale", "timestamp", "session_id",
@@ -57,6 +58,7 @@ EDGE_SPECS: list[tuple[str, str, str, list[str]]] = [
     ("GOVERNS", "Concept",  "Concept",  []),
     ("GOVERNS", "Concept",  "Artifact", []),
     ("GOVERNS", "Artifact", "Artifact", []),
+    ("GOVERNS", "Cluster",  "Artifact", []),
     ("GOVERNS", "Context",  "Concept",  []),
     ("GOVERNS", "Context",  "Artifact", []),
     # DERIVES_FROM
@@ -90,6 +92,7 @@ EDGE_SPECS: list[tuple[str, str, str, list[str]]] = [
     # SUPERSEDES
     ("SUPERSEDES", "Concept",     "Concept",     ["reason"]),
     ("SUPERSEDES", "Artifact",    "Artifact",    ["reason"]),
+    ("SUPERSEDES", "Cluster",     "Cluster",     ["reason"]),
     ("SUPERSEDES", "Context",     "Context",     ["reason"]),
     ("SUPERSEDES", "Observation", "Observation", ["reason"]),
     ("SUPERSEDES", "Decision",    "Decision",    ["reason"]),
@@ -157,6 +160,12 @@ def dump(conn: GraphConnection, out_path: Path) -> None:
     total_nodes = 0
     for ntype in NODE_TYPES:
         props = NODE_PROPS[ntype]
+        # Some node types may not exist in older schemas — skip entirely if absent.
+        try:
+            conn.execute(f"MATCH (n:{ntype}) RETURN n.id LIMIT 0")
+        except RuntimeError:
+            data["nodes"][ntype] = []
+            continue
         # Some properties may not exist in older schemas — probe and skip missing.
         available = []
         for p in props:
