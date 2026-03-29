@@ -21,6 +21,7 @@ import kuzu
 
 from preambulate import get_db_path
 from preambulate.identity import get_machine_id
+from preambulate.install import ensure_gitignore
 from preambulate.keystore import generate_key, key_exists
 
 
@@ -220,6 +221,7 @@ def init(db_path: Path, reset: bool = False) -> kuzu.Database:
     ids = insert_seed(conn)
     insert_founding_edges(conn, ids)
     _ensure_key(db_path)
+    ensure_gitignore(db_path.parent)
     print("done.")
     return db
 

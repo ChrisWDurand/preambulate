@@ -20,6 +20,15 @@ import argparse
 import json
 from pathlib import Path
 
+
+GITIGNORE_ENTRIES = [
+    "# preambulate — graph memory (local only, never commit)",
+    "memory.db/",
+    "graph_export.json",
+    ".preambulate_id",
+    ".preambulate_sync_state.json",
+]
+
 HOOKS_TO_INSTALL = {
     "SessionStart": [
         {
@@ -101,6 +110,25 @@ def _merge_hooks(existing: list[dict], incoming: list[dict]) -> tuple[list[dict]
     return result, skipped
 
 
+def ensure_gitignore(project_root: Path, dry_run: bool = False) -> None:
+    """Append missing preambulate entries to .gitignore in project_root."""
+    gitignore = project_root / ".gitignore"
+    existing  = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+    to_add    = [e for e in GITIGNORE_ENTRIES if e not in existing]
+
+    if not to_add:
+        return
+
+    if dry_run:
+        print(f"  .gitignore would add: {[e for e in to_add if not e.startswith('#')]}")
+        return
+
+    separator = "\n" if existing and not existing.endswith("\n") else ""
+    gitignore.write_text(existing + separator + "\n".join(to_add) + "\n", encoding="utf-8")
+    added = [e for e in to_add if not e.startswith("#")]
+    print(f"preambulate: .gitignore updated — added: {', '.join(added)}")
+
+
 def install(settings_path: Path, dry_run: bool = False) -> None:
     if settings_path.exists():
         config = json.loads(settings_path.read_text(encoding="utf-8"))
@@ -129,6 +157,8 @@ def install(settings_path: Path, dry_run: bool = False) -> None:
     if all_skipped:
         for cmd in all_skipped:
             print(f"  skipped (already present): {cmd}")
+
+    ensure_gitignore(Path.cwd(), dry_run=dry_run)
 
 
 def main() -> None:

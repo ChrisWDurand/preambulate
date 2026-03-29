@@ -1,0 +1,5 @@
+# preambulate — graph memory (local only, never commit)
+memory.db/
+graph_export.json
+.preambulate_id
+.preambulate_sync_state.json
