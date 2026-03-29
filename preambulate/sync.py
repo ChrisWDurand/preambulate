@@ -43,6 +43,7 @@ import kuzu
 from preambulate import get_db_path, get_project_dir
 from preambulate.export import dump_since, merge_remote
 from preambulate.identity import get_machine_id
+from preambulate.keystore import decrypt, encrypt, key_exists, replace_key
 from preambulate.sync_state import get_last_push_dt, record_pull, record_push
 
 
@@ -100,13 +101,19 @@ def _push(
 
     node_total = sum(len(v) for v in data["nodes"].values())
     edge_total = len(data["edges"])
-    payload    = json.dumps(data).encode("utf-8")
+    plaintext  = json.dumps(data).encode("utf-8")
+
+    project_id = get_machine_id(db_path)
+    if not key_exists(project_id):
+        print("preambulate sync: push aborted — no encryption key (run 'preambulate init')")
+        return
+    payload = encrypt(project_id, plaintext)
 
     since_label = since.isoformat() if since else "beginning (full)"
     print(f"preambulate sync: push  project={project}")
     print(f"  endpoint : {endpoint}")
     print(f"  since    : {since_label}")
-    print(f"  payload  : {len(payload):,} bytes  ({node_total} nodes, {edge_total} edges)")
+    print(f"  payload  : {len(payload):,} bytes encrypted  ({node_total} nodes, {edge_total} edges)")
 
     if dry_run:
         print("  (dry-run — nothing sent)")
@@ -125,7 +132,7 @@ def _push(
         print("preambulate sync: PREAMBULATE_API_KEY not set — aborting")
         return
 
-    headers = {**_common_headers(db_path, project), "Content-Type": "application/json"}
+    headers = {**_common_headers(db_path, project), "Content-Type": "application/octet-stream"}
     req = urllib_request.Request(
         url=f"{endpoint}?op=push",
         data=payload,
@@ -221,10 +228,23 @@ def _pull(
         record_pull(project_root, "error")
         return
 
+    project_id = get_machine_id(db_path)
+    if not key_exists(project_id):
+        print("preambulate sync: pull aborted — no encryption key (run 'preambulate init')")
+        record_pull(project_root, "error")
+        return
+
     try:
-        remote = json.loads(raw)
+        plaintext = decrypt(project_id, raw)
+    except Exception as exc:
+        print(f"preambulate sync: pull failed — decryption error ({exc})")
+        record_pull(project_root, "error")
+        return
+
+    try:
+        remote = json.loads(plaintext)
     except json.JSONDecodeError as exc:
-        print(f"preambulate sync: pull failed — invalid JSON response ({exc})")
+        print(f"preambulate sync: pull failed — invalid JSON after decryption ({exc})")
         record_pull(project_root, "error")
         return
 
@@ -235,6 +255,74 @@ def _pull(
     print(f"preambulate sync: pull complete")
     print(f"  {added} nodes added, {skipped} nodes skipped, {edges} edges added")
     record_pull(project_root, "ok")
+
+
+# ------------------------------------------------------------
+# Rotate
+# ------------------------------------------------------------
+
+def _rotate(db_path: Path, endpoint: str, api_key: str) -> None:
+    """
+    Rotate the API key and re-encrypt the remote graph with the new key.
+
+    Steps:
+      1. Pull and decrypt current graph into local db (ensures local is current)
+      2. POST /keys/rotate → receive new API key
+      3. Replace local key file with new key
+      4. Push full graph re-encrypted with new key
+    """
+    if not api_key:
+        print("preambulate sync: PREAMBULATE_API_KEY not set — aborting")
+        return
+
+    project_root = db_path.parent
+    project_id   = get_machine_id(db_path)
+
+    if not key_exists(project_id):
+        print("preambulate sync: no encryption key found — run 'preambulate init' first")
+        return
+
+    # Step 1 — pull to make sure local is current before rotation
+    print("preambulate sync: rotate — pulling current graph")
+    _pull(db_path, endpoint, api_key, dry_run=False)
+
+    # Step 2 — request key rotation
+    rotate_url = endpoint.replace("/sync", "/keys/rotate")
+    headers    = {**_common_headers(db_path, _project_name(project_root)), "Content-Length": "0"}
+    req = urllib_request.Request(
+        url=rotate_url,
+        data=b"",
+        method="POST",
+        headers=headers,
+    )
+    try:
+        with urllib_request.urlopen(req, timeout=30) as resp:
+            body = json.loads(resp.read())
+    except HTTPError as exc:
+        print(f"preambulate sync: rotate failed — HTTP {exc.code} {exc.reason}")
+        return
+    except URLError as exc:
+        print(f"preambulate sync: rotate failed — {exc.reason}")
+        return
+
+    new_api_key = body.get("key", "")
+    if not new_api_key:
+        print("preambulate sync: rotate failed — no key in response")
+        return
+
+    # Step 3 — replace local encryption key
+    from cryptography.fernet import Fernet
+    new_enc_key = Fernet.generate_key()
+    replace_key(project_id, new_enc_key)
+    print(f"  encryption key rotated: ~/.preambulate/{project_id}.key")
+
+    # Step 4 — push full graph re-encrypted with new key
+    print("preambulate sync: rotate — pushing re-encrypted graph with new API key")
+    _push(db_path, endpoint, new_api_key, dry_run=False, full=True)
+
+    print(f"preambulate sync: rotate complete")
+    print(f"  new API key: {new_api_key}")
+    print(f"  update PREAMBULATE_API_KEY in your environment")
 
 
 # ------------------------------------------------------------
@@ -249,9 +337,9 @@ def main() -> None:
     parser.add_argument(
         "op",
         nargs="?",
-        choices=["push", "pull"],
+        choices=["push", "pull", "rotate"],
         default="push",
-        help="Operation: push (default) or pull.",
+        help="Operation: push (default), pull, or rotate (rotate API + encryption keys).",
     )
     parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
     parser.add_argument(
@@ -278,8 +366,10 @@ def main() -> None:
 
     if args.op == "push":
         _push(args.db, args.endpoint, args.api_key, args.dry_run, args.full)
-    else:
+    elif args.op == "pull":
         _pull(args.db, args.endpoint, args.api_key, args.dry_run)
+    else:
+        _rotate(args.db, args.endpoint, args.api_key)
 
 
 if __name__ == "__main__":

@@ -20,6 +20,8 @@ from pathlib import Path
 import kuzu
 
 from preambulate import get_db_path
+from preambulate.identity import get_machine_id
+from preambulate.keystore import generate_key, key_exists
 
 
 SEED_PHRASE = "geometry governs exploration"
@@ -174,6 +176,15 @@ def insert_founding_edges(conn: kuzu.Connection, ids: dict) -> None:
     print("  founding edges inserted")
 
 
+def _ensure_key(db_path: Path) -> None:
+    project_id = get_machine_id(db_path)
+    if not key_exists(project_id):
+        generate_key(project_id)
+        key_path = Path.home() / ".preambulate" / f"{project_id}.key"
+        print(f"  encryption key generated: {key_path}")
+        print("  keep this key safe — it is required to decrypt synced graphs")
+
+
 def init(db_path: Path, reset: bool = False) -> kuzu.Database:
     if reset and db_path.exists():
         import shutil
@@ -183,7 +194,9 @@ def init(db_path: Path, reset: bool = False) -> kuzu.Database:
     if db_path.exists() and not reset:
         print(f"database already exists at {db_path}")
         print("  use --reset to drop and recreate")
-        return kuzu.Database(str(db_path))
+        db = kuzu.Database(str(db_path))
+        _ensure_key(db_path)
+        return db
 
     print(f"initializing database at {db_path}")
     db   = kuzu.Database(str(db_path))
@@ -191,6 +204,7 @@ def init(db_path: Path, reset: bool = False) -> kuzu.Database:
     create_schema(conn)
     ids = insert_seed(conn)
     insert_founding_edges(conn, ids)
+    _ensure_key(db_path)
     print("done.")
     return db
 
