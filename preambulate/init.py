@@ -48,7 +48,7 @@ def run_ddl(conn: GraphConnection, ddl: str) -> None:
             conn.execute(stmt)
 
 
-def create_schema(conn: kuzu.Connection) -> None:
+def create_schema(conn: GraphConnection) -> None:
     schema_file = Path(__file__).parent / "schema.cypher"
     ddl = schema_file.read_text(encoding="utf-8")
     run_ddl(conn, ddl)

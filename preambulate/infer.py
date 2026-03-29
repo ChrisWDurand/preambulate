@@ -136,8 +136,172 @@ def _resolve_relative(module: str, level: int, file_path: Path, root: Path) -> P
 
 
 # ------------------------------------------------------------
+# Symbol extraction
+# ------------------------------------------------------------
+
+def _extract_symbols(tree: ast.AST) -> list[tuple[str, str]]:
+    """
+    Return (kind, name) for top-level and class-level function/class definitions.
+    kind is one of: 'function', 'class', 'method'
+    """
+    symbols: list[tuple[str, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            symbols.append(("class", node.name))
+            for item in node.body:
+                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    symbols.append(("method", f"{node.name}.{item.name}"))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            # Only top-level functions (not methods — handled above)
+            if not any(
+                isinstance(parent, ast.ClassDef)
+                for parent in ast.walk(tree)
+                if any(child is node for child in ast.walk(parent))
+                if parent is not tree
+            ):
+                symbols.append(("function", node.name))
+    return symbols
+
+
+def _extract_within_file_calls(
+    tree: ast.AST,
+    defined_names: set[str],
+) -> list[tuple[str, str]]:
+    """
+    Return (caller_name, callee_name) pairs for calls within the same file.
+    Only tracks calls to names defined in this file.
+    """
+    calls: list[tuple[str, str]] = []
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        caller = node.name
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Call):
+                continue
+            # Direct call: foo()
+            if isinstance(child.func, ast.Name) and child.func.id in defined_names:
+                callee = child.func.id
+                if callee != caller:
+                    calls.append((caller, callee))
+            # Attribute call: self.foo() — resolve to ClassName.foo if known
+            elif isinstance(child.func, ast.Attribute):
+                callee = child.func.attr
+                if callee in defined_names and callee != caller:
+                    calls.append((caller, callee))
+
+    return calls
+
+
+# ------------------------------------------------------------
 # Graph writes
 # ------------------------------------------------------------
+
+def _symbol_path(file_rel: str, symbol_name: str) -> str:
+    """Canonical path for a symbol artifact: 'file/path.py::SymbolName'."""
+    return f"{file_rel}::{symbol_name}"
+
+
+def _ensure_symbol_artifact(
+    conn: GraphConnection,
+    file_rel: str,
+    symbol_name: str,
+    kind: str,
+) -> str:
+    """Upsert an Artifact node for a symbol. Returns the symbol path."""
+    sym_path = _symbol_path(file_rel, symbol_name)
+    rows = conn.execute(
+        "MATCH (a:Artifact {path: $path}) RETURN a.id LIMIT 1",
+        parameters={"path": sym_path},
+    )
+    if not rows:
+        conn.execute(
+            """
+            CREATE (a:Artifact {
+                id:    $id,
+                label: $label,
+                path:  $path,
+                kind:  $kind
+            })
+            """,
+            parameters={
+                "id":    new_id(),
+                "label": symbol_name,
+                "path":  sym_path,
+                "kind":  kind,
+            },
+        )
+    return sym_path
+
+
+def _ensure_governs(conn: GraphConnection, file_rel: str, sym_path: str) -> None:
+    """Ensure a GOVERNS edge from the file artifact to the symbol artifact."""
+    rows = conn.execute(
+        """
+        MATCH (f:Artifact {path: $file})-[r:GOVERNS]->(s:Artifact {path: $sym})
+        RETURN COUNT(*)
+        """,
+        parameters={"file": file_rel, "sym": sym_path},
+    )
+    if rows and rows[0][0] > 0:
+        return
+    conn.execute(
+        """
+        MATCH (f:Artifact {path: $file}), (s:Artifact {path: $sym})
+        CREATE (f)-[:GOVERNS {
+            weight: $weight, traversal_cost: $traversal_cost,
+            created_at: $created_at, rationale: $rationale
+        }]->(s)
+        """,
+        parameters={
+            "file":           file_rel,
+            "sym":            sym_path,
+            "weight":         1.0,
+            "traversal_cost": 0.0,
+            "created_at":     now(),
+            "rationale":      f"Module {file_rel} defines {sym_path.split('::')[1]}.",
+        },
+    )
+
+
+def _ensure_symbol_derives_from(
+    conn: GraphConnection,
+    caller_path: str,
+    callee_path: str,
+) -> bool:
+    """Create a DERIVES_FROM edge between two symbol artifacts if absent."""
+    rows = conn.execute(
+        """
+        MATCH (a:Artifact {path: $src})-[r:DERIVES_FROM]->(b:Artifact {path: $tgt})
+        RETURN COUNT(*)
+        """,
+        parameters={"src": caller_path, "tgt": callee_path},
+    )
+    if rows and rows[0][0] > 0:
+        return False
+    conn.execute(
+        """
+        MATCH (a:Artifact {path: $src}), (b:Artifact {path: $tgt})
+        CREATE (a)-[:DERIVES_FROM {
+            weight: $weight, traversal_cost: $traversal_cost,
+            created_at: $created_at, rationale: $rationale
+        }]->(b)
+        """,
+        parameters={
+            "src":            caller_path,
+            "tgt":            callee_path,
+            "weight":         1.0,
+            "traversal_cost": 0.0,
+            "created_at":     now(),
+            "rationale":      (
+                f"Inferred from call: "
+                f"{caller_path.split('::')[-1]} calls {callee_path.split('::')[-1]}"
+            ),
+        },
+    )
+    return True
+
 
 def _ensure_artifact(conn: GraphConnection, rel_path: str) -> None:
     """Create an Artifact node if one does not already exist for this path."""
@@ -234,11 +398,9 @@ def infer_file(conn: GraphConnection, file_path: Path, root: Path) -> int:
     # Ensure the source artifact exists regardless of whether it has local imports
     _ensure_artifact(conn, rel_src)
 
-    imported_paths = _extract_imports(tree, file_path, root)
-    if not imported_paths:
-        return 0
-
+    # --- Phase 1: import-level DERIVES_FROM edges ---
     created = 0
+    imported_paths = _extract_imports(tree, file_path, root)
     for imp_path in imported_paths:
         if _should_skip(imp_path, root):
             continue
@@ -246,11 +408,8 @@ def infer_file(conn: GraphConnection, file_path: Path, root: Path) -> int:
             rel_tgt = str(imp_path.relative_to(root))
         except ValueError:
             continue
-
-        # Don't record self-imports (shouldn't happen, but guard anyway)
         if rel_src == rel_tgt:
             continue
-
         _ensure_artifact(conn, rel_tgt)
         if _ensure_derives_from(conn, rel_src, rel_tgt):
             print(
@@ -258,6 +417,30 @@ def infer_file(conn: GraphConnection, file_path: Path, root: Path) -> int:
                 f" -[DERIVES_FROM]-> {Path(rel_tgt).name}"
             )
             created += 1
+
+    # --- Phase 2: symbol extraction — file -[GOVERNS]-> symbol ---
+    symbols = _extract_symbols(tree)
+    defined_names: set[str] = set()
+    for kind, name in symbols:
+        sym_path = _ensure_symbol_artifact(conn, rel_src, name, kind)
+        _ensure_governs(conn, rel_src, sym_path)
+        # Index by base name for call resolution
+        defined_names.add(name.split(".")[-1])
+
+    # --- Phase 3: within-file call resolution — caller -[DERIVES_FROM]-> callee ---
+    if len(symbols) > 1:
+        sym_map = {name.split(".")[-1]: _symbol_path(rel_src, name) for _, name in symbols}
+        for caller_name, callee_name in _extract_within_file_calls(tree, defined_names):
+            caller_path = sym_map.get(caller_name)
+            callee_path = sym_map.get(callee_name)
+            if caller_path and callee_path:
+                if _ensure_symbol_derives_from(conn, caller_path, callee_path):
+                    print(
+                        f"preambulate: {caller_name}"
+                        f" -[DERIVES_FROM]-> {callee_name}"
+                        f"  ({Path(rel_src).name})"
+                    )
+                    created += 1
 
     return created
 

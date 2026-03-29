@@ -126,6 +126,7 @@ CREATE REL TABLE GROUP GOVERNS (
     FROM Seed     TO Concept,
     FROM Concept  TO Concept,
     FROM Concept  TO Artifact,
+    FROM Artifact TO Artifact,
     FROM Context  TO Concept,
     FROM Context  TO Artifact,
     weight          DOUBLE,

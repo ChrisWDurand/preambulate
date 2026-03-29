@@ -53,11 +53,12 @@ NODE_PROPS = {
 # (rel_type, from_type, to_type, extra_props)
 EDGE_SPECS: list[tuple[str, str, str, list[str]]] = [
     # GOVERNS
-    ("GOVERNS", "Seed",    "Concept",  []),
-    ("GOVERNS", "Concept", "Concept",  []),
-    ("GOVERNS", "Concept", "Artifact", []),
-    ("GOVERNS", "Context", "Concept",  []),
-    ("GOVERNS", "Context", "Artifact", []),
+    ("GOVERNS", "Seed",     "Concept",  []),
+    ("GOVERNS", "Concept",  "Concept",  []),
+    ("GOVERNS", "Concept",  "Artifact", []),
+    ("GOVERNS", "Artifact", "Artifact", []),
+    ("GOVERNS", "Context",  "Concept",  []),
+    ("GOVERNS", "Context",  "Artifact", []),
     # DERIVES_FROM
     ("DERIVES_FROM", "Concept",     "Concept",  []),
     ("DERIVES_FROM", "Concept",     "Artifact", []),
@@ -183,12 +184,16 @@ def dump(conn: GraphConnection, out_path: Path) -> None:
     for rel, from_type, to_type, extra in EDGE_SPECS:
         all_props = BASE_EDGE_PROPS + extra
         prop_list = ", ".join(f"r.{p} AS {p}" for p in all_props)
-        for row in conn.execute(
-            f"""
-            MATCH (a:{from_type})-[r:{rel}]->(b:{to_type})
-            RETURN a.id AS from_id, b.id AS to_id, {prop_list}
-            """
-        ):
+        try:
+            edge_rows = conn.execute(
+                f"""
+                MATCH (a:{from_type})-[r:{rel}]->(b:{to_type})
+                RETURN a.id AS from_id, b.id AS to_id, {prop_list}
+                """
+            )
+        except RuntimeError:
+            continue  # edge type/pair not in this schema version
+        for row in edge_rows:
             entry = {
                 "rel":       rel,
                 "from_type": from_type,
@@ -219,6 +224,7 @@ def _clear_init_geometry(conn: GraphConnection) -> None:
     conn.execute("MATCH (a:Concept)-[r:GOVERNS]->(b:Concept) DELETE r")
     conn.execute("MATCH (a:Concept)-[r:CONSTRAINS]->(b:Concept) DELETE r")
     conn.execute("MATCH (a:Concept)-[r:DERIVES_FROM]->(b:Concept) DELETE r")
+    conn.execute("MATCH (a:Concept)-[r:DEFINES]->(b:Concept) DELETE r")
     conn.execute("MATCH (s:Seed) DELETE s")
     conn.execute("MATCH (c:Concept) DELETE c")
     print("  cleared init.py seed geometry")
@@ -316,10 +322,13 @@ def verify(conn: GraphConnection) -> None:
     # Edge count
     total_edges = 0
     for rel, from_type, to_type, _ in EDGE_SPECS:
-        rows = conn.execute(
-            f"MATCH (:{from_type})-[r:{rel}]->(:{to_type}) RETURN COUNT(*)"
-        )
-        total_edges += rows[0][0] if rows else 0
+        try:
+            rows = conn.execute(
+                f"MATCH (:{from_type})-[r:{rel}]->(:{to_type}) RETURN COUNT(*)"
+            )
+            total_edges += rows[0][0] if rows else 0
+        except RuntimeError:
+            pass
     print(f"  edges total: {total_edges}")
 
 
@@ -375,22 +384,25 @@ def dump_since(conn: GraphConnection, since: datetime | None) -> dict:
         all_props = BASE_EDGE_PROPS + extra
         prop_list = ", ".join(f"r.{p} AS {p}" for p in all_props)
 
-        if since is not None:
-            edge_rows = conn.execute(
-                f"""
-                MATCH (a:{from_type})-[r:{rel}]->(b:{to_type})
-                WHERE r.created_at > $since
-                RETURN a.id AS from_id, b.id AS to_id, {prop_list}
-                """,
-                parameters={"since": since},
-            )
-        else:
-            edge_rows = conn.execute(
-                f"""
-                MATCH (a:{from_type})-[r:{rel}]->(b:{to_type})
-                RETURN a.id AS from_id, b.id AS to_id, {prop_list}
-                """
-            )
+        try:
+            if since is not None:
+                edge_rows = conn.execute(
+                    f"""
+                    MATCH (a:{from_type})-[r:{rel}]->(b:{to_type})
+                    WHERE r.created_at > $since
+                    RETURN a.id AS from_id, b.id AS to_id, {prop_list}
+                    """,
+                    parameters={"since": since},
+                )
+            else:
+                edge_rows = conn.execute(
+                    f"""
+                    MATCH (a:{from_type})-[r:{rel}]->(b:{to_type})
+                    RETURN a.id AS from_id, b.id AS to_id, {prop_list}
+                    """
+                )
+        except RuntimeError:
+            continue  # edge type/pair not in this schema version
 
         for row in edge_rows:
             entry = {
