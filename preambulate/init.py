@@ -173,6 +173,21 @@ def insert_founding_edges(conn: kuzu.Connection, ids: dict) -> None:
         },
     )
 
+    conn.execute(
+        """
+        MATCH (g:Concept {id: $g_id})
+        CREATE (g)-[:DEFINES {
+            weight: $weight, traversal_cost: $traversal_cost,
+            created_at: $created_at, rationale: $rationale
+        }]->(g)
+        """,
+        parameters={
+            **base,
+            "g_id":     ids["governs"],
+            "rationale": "The concept 'governs' names the edge type GOVERNS — it defines itself. Reflexive self-description is the founding geometry's signature property.",
+        },
+    )
+
     print("  founding edges inserted")
 
 

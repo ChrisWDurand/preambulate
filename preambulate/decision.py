@@ -27,7 +27,7 @@ Combine both in one call:
         --edge "briefing.py|INSTANTIATES|memory-briefing" \\
         --edge-rationale "..."
 
-Supported --edge relationship types: INSTANTIATES, DERIVES_FROM, RESONATES_WITH
+Supported --edge relationship types: GOVERNS, INSTANTIATES, DERIVES_FROM, RESONATES_WITH
 
 Edge resolution: src/tgt strings are matched first against Artifact.path,
 then against Concept.label.  A --concept entry must precede any --edge that
@@ -61,7 +61,7 @@ from preambulate.identity import author as get_author, get_machine_id
 
 DEFAULT_DB_PATH = get_db_path()
 
-SUPPORTED_RELS = {"INSTANTIATES", "DERIVES_FROM", "RESONATES_WITH"}
+SUPPORTED_RELS = {"GOVERNS", "INSTANTIATES", "DERIVES_FROM", "RESONATES_WITH"}
 
 # decision_type enum values (stored as STRING in Kuzu)
 DT_USER       = "user"
@@ -237,7 +237,18 @@ def write_edge(
             "created_at":     ts,
             "rationale":      rationale,
         }
-        if rel == "INSTANTIATES":
+        if rel == "GOVERNS":
+            conn.execute(
+                f"""
+                MATCH (s:{s_type} {{id: $s_id}}), (t:{t_type} {{id: $t_id}})
+                CREATE (s)-[:GOVERNS {{
+                    weight: $weight, traversal_cost: $traversal_cost,
+                    created_at: $created_at, rationale: $rationale
+                }}]->(t)
+                """,
+                parameters=base,
+            )
+        elif rel == "INSTANTIATES":
             conn.execute(
                 f"""
                 MATCH (s:{s_type} {{id: $s_id}}), (t:{t_type} {{id: $t_id}})
