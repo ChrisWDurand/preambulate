@@ -157,6 +157,68 @@ with userId derived from a per-user key lookup table.
 
 ---
 
+## Agent Spawning Protocol (proposed — under negotiation with preambulate-web)
+
+When a preambulate session has work that requires a response from preambulate-web,
+it should not require the user to manually open the other repo and relay context.
+The graph is the communication channel. The sync backend is the transport.
+
+### Message convention
+
+An inter-agent message is a `Decision` node with:
+- `decision_type: "agent_message"` (new value — requires schema update)
+- `label`: short description of what is needed
+- `rationale`: full context, including which question in the contract requires action
+- `session_id`: originating session
+- `machine_id`: originating repo/machine identity
+
+The Decision is anchored (`ANCHORS`) to the contract `Artifact` node it concerns.
+
+On push, the message reaches the sync backend. On the receiving agent's next
+`SessionStart`, `preambulate capture` surfaces it in the briefing under a new
+section: **"Messages from other agents"** — distinct from regular decisions.
+
+### Contract Artifact convention
+
+For an anchor to be meaningful across repos, both graphs must contain an
+`Artifact` node for the contract file. The path used as the anchor must be
+agreed between both sides. Proposed canonical paths:
+
+| Contract file | Canonical artifact path |
+|---|---|
+| This file | `interface/web-client.md` |
+| Counterpart | `interface/client-web.md` |
+
+Each repo registers its own contract artifact. Cross-repo references use the
+canonical path as a shared key — not a UUID, since UUIDs differ per graph.
+
+### Subgraph delivery
+
+A spawned agent does not need the full graph — it needs the neighborhood around
+the contract node. The existing `preambulate briefing --focal interface/web-client.md`
+query serves this purpose. No new transport is needed.
+
+### What preambulate-web needs to provide
+
+- Confirm `decision_type: "agent_message"` is acceptable as an opaque value
+  (server stores it without inspection — no change required server-side)
+- Confirm the briefing pull on SessionStart will surface new Decision nodes
+  of this type prominently (client-side change in `capture.py` / `briefing.py`)
+- Agree on canonical contract artifact paths (table above)
+
+### Open design question
+
+**Spawn trigger**: today, someone must open preambulate-web for the message to
+be acted on. A future improvement: the Stop hook could POST a lightweight
+notification (project name + contract path) to a `/notify` endpoint, which
+the preambulate-web server stores. The next SessionStart in that repo pulls
+the notification before running capture. No new infrastructure — one new
+endpoint on the existing Worker.
+
+Propose design in `preambulate-web/interface/client-web.md`.
+
+---
+
 ## Open Questions
 
 **Q10: Key validation and re-registration**
