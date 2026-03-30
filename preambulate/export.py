@@ -6,16 +6,16 @@ into a freshly-initialised database.  Intended for schema migrations
 where init.py --reset would otherwise destroy live data.
 
 Usage:
-    python export.py dump                              # dump to graph_export.json
-    python export.py dump --out backup.json            # explicit output path
-    python export.py restore --dump graph_export.json  # restore into current DB
+    preambulate export dump                                    # dump to graph_export.json
+    preambulate export dump --out backup.json                  # explicit output path
+    preambulate export restore --dump graph_export.json        # restore (DB must be fresh)
+    preambulate export restore --dump graph_export.json --reset  # drop, reinit, restore
 
-Restore sequence for a schema migration:
-    python export.py dump
-    python init.py --reset
-    python export.py restore --dump graph_export.json
+Migration sequence (--reset handles steps 2-3 automatically):
+    preambulate export dump
+    preambulate export restore --dump graph_export.json --reset
 
-The restore step clears the seed geometry that init.py inserts (new UUIDs)
+The restore step clears the seed geometry that init inserts (new UUIDs)
 before re-importing the original nodes so that existing edges remain valid.
 """
 
@@ -27,9 +27,8 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-import kuzu
-
 from preambulate import get_db_path
+from preambulate.graph import GraphConnection, open_graph
 
 
 # ------------------------------------------------------------
@@ -39,12 +38,13 @@ from preambulate import get_db_path
 DEFAULT_DB_PATH = get_db_path()
 DEFAULT_DUMP     = Path("graph_export.json")
 
-NODE_TYPES = ["Seed", "Concept", "Artifact", "Context", "Observation", "Decision"]
+NODE_TYPES = ["Seed", "Concept", "Artifact", "Cluster", "Context", "Observation", "Decision"]
 
 NODE_PROPS = {
     "Seed":        ["id", "phrase", "created_at"],
     "Concept":     ["id", "label", "definition", "depth"],
     "Artifact":    ["id", "label", "path", "kind"],
+    "Cluster":     ["id", "label", "algorithm", "phase", "created_at", "membership_count"],
     "Context":     ["id", "label", "active"],
     "Observation": ["id", "label", "source", "confidence"],
     "Decision":    ["id", "label", "rationale", "timestamp", "session_id",
@@ -54,11 +54,13 @@ NODE_PROPS = {
 # (rel_type, from_type, to_type, extra_props)
 EDGE_SPECS: list[tuple[str, str, str, list[str]]] = [
     # GOVERNS
-    ("GOVERNS", "Seed",    "Concept",  []),
-    ("GOVERNS", "Concept", "Concept",  []),
-    ("GOVERNS", "Concept", "Artifact", []),
-    ("GOVERNS", "Context", "Concept",  []),
-    ("GOVERNS", "Context", "Artifact", []),
+    ("GOVERNS", "Seed",     "Concept",  []),
+    ("GOVERNS", "Concept",  "Concept",  []),
+    ("GOVERNS", "Concept",  "Artifact", []),
+    ("GOVERNS", "Artifact", "Artifact", []),
+    ("GOVERNS", "Cluster",  "Artifact", []),
+    ("GOVERNS", "Context",  "Concept",  []),
+    ("GOVERNS", "Context",  "Artifact", []),
     # DERIVES_FROM
     ("DERIVES_FROM", "Concept",     "Concept",  []),
     ("DERIVES_FROM", "Concept",     "Artifact", []),
@@ -90,6 +92,7 @@ EDGE_SPECS: list[tuple[str, str, str, list[str]]] = [
     # SUPERSEDES
     ("SUPERSEDES", "Concept",     "Concept",     ["reason"]),
     ("SUPERSEDES", "Artifact",    "Artifact",    ["reason"]),
+    ("SUPERSEDES", "Cluster",     "Cluster",     ["reason"]),
     ("SUPERSEDES", "Context",     "Context",     ["reason"]),
     ("SUPERSEDES", "Observation", "Observation", ["reason"]),
     ("SUPERSEDES", "Decision",    "Decision",    ["reason"]),
@@ -145,9 +148,9 @@ def _deserial(key: str, v: object) -> object:
 # Dump
 # ------------------------------------------------------------
 
-def dump(conn: kuzu.Connection, out_path: Path) -> None:
+def dump(conn: GraphConnection, out_path: Path) -> None:
     data: dict = {
-        "version":     "1.0",
+        "version":     "2.0",
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "nodes":       {},
         "edges":       [],
@@ -157,6 +160,12 @@ def dump(conn: kuzu.Connection, out_path: Path) -> None:
     total_nodes = 0
     for ntype in NODE_TYPES:
         props = NODE_PROPS[ntype]
+        # Some node types may not exist in older schemas — skip entirely if absent.
+        try:
+            conn.execute(f"MATCH (n:{ntype}) RETURN n.id LIMIT 0")
+        except RuntimeError:
+            data["nodes"][ntype] = []
+            continue
         # Some properties may not exist in older schemas — probe and skip missing.
         available = []
         for p in props:
@@ -166,12 +175,10 @@ def dump(conn: kuzu.Connection, out_path: Path) -> None:
             except RuntimeError:
                 pass  # property not in this schema version
         prop_list = ", ".join(f"n.{p} AS {p}" for p in available)
-        r = conn.execute(f"MATCH (n:{ntype}) RETURN {prop_list}")
+        node_rows = conn.execute(f"MATCH (n:{ntype}) RETURN {prop_list}")
         rows = []
-        while r.has_next():
-            row = r.get_next()
+        for row in node_rows:
             record = {p: _serial(v) for p, v in zip(available, row)}
-            # Fill missing properties with None so restore targets the full schema
             for p in props:
                 if p not in record:
                     record[p] = None
@@ -186,14 +193,16 @@ def dump(conn: kuzu.Connection, out_path: Path) -> None:
     for rel, from_type, to_type, extra in EDGE_SPECS:
         all_props = BASE_EDGE_PROPS + extra
         prop_list = ", ".join(f"r.{p} AS {p}" for p in all_props)
-        r = conn.execute(
-            f"""
-            MATCH (a:{from_type})-[r:{rel}]->(b:{to_type})
-            RETURN a.id AS from_id, b.id AS to_id, {prop_list}
-            """
-        )
-        while r.has_next():
-            row   = r.get_next()
+        try:
+            edge_rows = conn.execute(
+                f"""
+                MATCH (a:{from_type})-[r:{rel}]->(b:{to_type})
+                RETURN a.id AS from_id, b.id AS to_id, {prop_list}
+                """
+            )
+        except RuntimeError:
+            continue  # edge type/pair not in this schema version
+        for row in edge_rows:
             entry = {
                 "rel":       rel,
                 "from_type": from_type,
@@ -214,7 +223,7 @@ def dump(conn: kuzu.Connection, out_path: Path) -> None:
 # Restore
 # ------------------------------------------------------------
 
-def _clear_init_geometry(conn: kuzu.Connection) -> None:
+def _clear_init_geometry(conn: GraphConnection) -> None:
     """
     Remove the seed geometry that init.py inserted (new UUIDs).
     At this point the DB contains only those nodes — safe to delete all.
@@ -224,12 +233,13 @@ def _clear_init_geometry(conn: kuzu.Connection) -> None:
     conn.execute("MATCH (a:Concept)-[r:GOVERNS]->(b:Concept) DELETE r")
     conn.execute("MATCH (a:Concept)-[r:CONSTRAINS]->(b:Concept) DELETE r")
     conn.execute("MATCH (a:Concept)-[r:DERIVES_FROM]->(b:Concept) DELETE r")
+    conn.execute("MATCH (a:Concept)-[r:DEFINES]->(b:Concept) DELETE r")
     conn.execute("MATCH (s:Seed) DELETE s")
     conn.execute("MATCH (c:Concept) DELETE c")
     print("  cleared init.py seed geometry")
 
 
-def _restore_nodes(conn: kuzu.Connection, data: dict) -> int:
+def _restore_nodes(conn: GraphConnection, data: dict) -> int:
     total = 0
     for ntype, rows in data.items():
         if not rows:
@@ -244,16 +254,20 @@ def _restore_nodes(conn: kuzu.Connection, data: dict) -> int:
                 if (v := row.get(p)) is not None
             }
             placeholders = ", ".join(f"{p}: ${p}" for p in params)
-            conn.execute(
-                f"CREATE (n:{ntype} {{{placeholders}}})",
-                parameters=params,
-            )
+            try:
+                conn.execute(
+                    f"CREATE (n:{ntype} {{{placeholders}}})",
+                    parameters=params,
+                )
+            except RuntimeError as exc:
+                print(f"  warning: skipped {ntype} node ({exc})")
+                continue
             total += 1
         print(f"  {ntype}: restored {len(rows)} node(s)")
     return total
 
 
-def _restore_edges(conn: kuzu.Connection, edges: list) -> int:
+def _restore_edges(conn: GraphConnection, edges: list) -> int:
     total = 0
     for e in edges:
         rel        = e["rel"]
@@ -282,9 +296,15 @@ def _restore_edges(conn: kuzu.Connection, edges: list) -> int:
     return total
 
 
-def restore(conn: kuzu.Connection, dump_path: Path) -> None:
+CURRENT_VERSION = "2.0"
+
+
+def restore(conn: GraphConnection, dump_path: Path) -> None:
     data  = json.loads(dump_path.read_text(encoding="utf-8"))
-    print(f"restoring from {dump_path}  (exported {data['exported_at']})")
+    dump_version = data.get("version", "unknown")
+    print(f"restoring from {dump_path}  (exported {data['exported_at']}  version={dump_version})")
+    if dump_version != CURRENT_VERSION:
+        print(f"  warning: dump version {dump_version!r} does not match current {CURRENT_VERSION!r} — proceeding, unknown properties will be skipped")
 
     _clear_init_geometry(conn)
 
@@ -298,37 +318,39 @@ def restore(conn: kuzu.Connection, dump_path: Path) -> None:
 # Verification
 # ------------------------------------------------------------
 
-def verify(conn: kuzu.Connection) -> None:
+def verify(conn: GraphConnection) -> None:
     """Spot-check that the restore looks correct."""
     print("\nverification:")
 
     # Decision nodes — spot-check audit fields
-    r = conn.execute(
+    dec_rows = conn.execute(
         "MATCH (d:Decision) RETURN d.id, d.decision_type, d.rationale_source LIMIT 3"
     )
-    found = False
-    while r.has_next():
-        found = True
-        did, dtype, rsource = r.get_next()
-        print(f"  Decision {did[:8]}  decision_type={dtype!r}  rationale_source={rsource!r}")
-    if not found:
+    if not dec_rows:
         print("  (no Decision nodes)")
+    for did, dtype, rsource in dec_rows:
+        print(f"  Decision {did[:8]}  decision_type={dtype!r}  rationale_source={rsource!r}")
 
     # Node counts
     for ntype in NODE_TYPES:
-        r = conn.execute(f"MATCH (n:{ntype}) RETURN COUNT(*)")
-        count = r.get_next()[0] if r.has_next() else 0
+        try:
+            rows = conn.execute(f"MATCH (n:{ntype}) RETURN COUNT(*)")
+        except RuntimeError:
+            continue
+        count = rows[0][0] if rows else 0
         if count:
             print(f"  {ntype}: {count}")
 
     # Edge count
     total_edges = 0
     for rel, from_type, to_type, _ in EDGE_SPECS:
-        r = conn.execute(
-            f"MATCH (:{from_type})-[r:{rel}]->(:{to_type}) RETURN COUNT(*)"
-        )
-        n = r.get_next()[0] if r.has_next() else 0
-        total_edges += n
+        try:
+            rows = conn.execute(
+                f"MATCH (:{from_type})-[r:{rel}]->(:{to_type}) RETURN COUNT(*)"
+            )
+            total_edges += rows[0][0] if rows else 0
+        except RuntimeError:
+            pass
     print(f"  edges total: {total_edges}")
 
 
@@ -336,7 +358,7 @@ def verify(conn: kuzu.Connection) -> None:
 # Incremental dump (sync payload)
 # ------------------------------------------------------------
 
-def dump_since(conn: kuzu.Connection, since: datetime | None) -> dict:
+def dump_since(conn: GraphConnection, since: datetime | None) -> dict:
     """
     Return a graph export dict, optionally filtered to changes since `since`.
 
@@ -356,7 +378,12 @@ def dump_since(conn: kuzu.Connection, since: datetime | None) -> dict:
     }
 
     for ntype in NODE_TYPES:
-        props     = NODE_PROPS[ntype]
+        props = NODE_PROPS[ntype]
+        try:
+            conn.execute(f"MATCH (n:{ntype}) RETURN n.id LIMIT 0")
+        except RuntimeError:
+            data["nodes"][ntype] = []
+            continue
         available = [
             p for p in props
             if _prop_exists(conn, ntype, p)
@@ -364,16 +391,15 @@ def dump_since(conn: kuzu.Connection, since: datetime | None) -> dict:
         prop_list = ", ".join(f"n.{p} AS {p}" for p in available)
 
         if since is not None and ntype == "Decision":
-            r = conn.execute(
+            node_rows = conn.execute(
                 f"MATCH (n:{ntype}) WHERE n.timestamp > $since RETURN {prop_list}",
                 parameters={"since": since},
             )
         else:
-            r = conn.execute(f"MATCH (n:{ntype}) RETURN {prop_list}")
+            node_rows = conn.execute(f"MATCH (n:{ntype}) RETURN {prop_list}")
 
         rows = []
-        while r.has_next():
-            row    = r.get_next()
+        for row in node_rows:
             record = {p: _serial(v) for p, v in zip(available, row)}
             for p in props:
                 if p not in record:
@@ -385,25 +411,27 @@ def dump_since(conn: kuzu.Connection, since: datetime | None) -> dict:
         all_props = BASE_EDGE_PROPS + extra
         prop_list = ", ".join(f"r.{p} AS {p}" for p in all_props)
 
-        if since is not None:
-            r = conn.execute(
-                f"""
-                MATCH (a:{from_type})-[r:{rel}]->(b:{to_type})
-                WHERE r.created_at > $since
-                RETURN a.id AS from_id, b.id AS to_id, {prop_list}
-                """,
-                parameters={"since": since},
-            )
-        else:
-            r = conn.execute(
-                f"""
-                MATCH (a:{from_type})-[r:{rel}]->(b:{to_type})
-                RETURN a.id AS from_id, b.id AS to_id, {prop_list}
-                """
-            )
+        try:
+            if since is not None:
+                edge_rows = conn.execute(
+                    f"""
+                    MATCH (a:{from_type})-[r:{rel}]->(b:{to_type})
+                    WHERE r.created_at > $since
+                    RETURN a.id AS from_id, b.id AS to_id, {prop_list}
+                    """,
+                    parameters={"since": since},
+                )
+            else:
+                edge_rows = conn.execute(
+                    f"""
+                    MATCH (a:{from_type})-[r:{rel}]->(b:{to_type})
+                    RETURN a.id AS from_id, b.id AS to_id, {prop_list}
+                    """
+                )
+        except RuntimeError:
+            continue  # edge type/pair not in this schema version
 
-        while r.has_next():
-            row   = r.get_next()
+        for row in edge_rows:
             entry = {
                 "rel":       rel,
                 "from_type": from_type,
@@ -418,7 +446,7 @@ def dump_since(conn: kuzu.Connection, since: datetime | None) -> dict:
     return data
 
 
-def _prop_exists(conn: kuzu.Connection, ntype: str, prop: str) -> bool:
+def _prop_exists(conn: GraphConnection, ntype: str, prop: str) -> bool:
     """Return True if a property exists on a node table (schema probe)."""
     try:
         conn.execute(f"MATCH (n:{ntype}) RETURN n.{prop} LIMIT 0")
@@ -432,7 +460,7 @@ def _prop_exists(conn: kuzu.Connection, ntype: str, prop: str) -> bool:
 # ------------------------------------------------------------
 
 def merge_remote(
-    conn: kuzu.Connection,
+    conn: GraphConnection,
     remote: dict,
 ) -> tuple[int, int, int]:
     """
@@ -469,7 +497,7 @@ def merge_remote(
                 f"MATCH (n:{ntype} {{id: $id}}) RETURN COUNT(*)",
                 parameters={"id": uid},
             )
-            exists = exists_r.get_next()[0] > 0 if exists_r.has_next() else False
+            exists = exists_r[0][0] > 0 if exists_r else False
 
             if exists:
                 nodes_skipped += 1
@@ -510,7 +538,7 @@ def merge_remote(
             f"MATCH (n:{to_type} {{id: $id}}) RETURN COUNT(*)",
             parameters={"id": to_id},
         )
-        if not (fr.get_next()[0] > 0 and tr.get_next()[0] > 0):
+        if not ((fr[0][0] > 0 if fr else False) and (tr[0][0] > 0 if tr else False)):
             continue
 
         # Idempotency check — skip if this directed edge already exists
@@ -521,7 +549,7 @@ def merge_remote(
             """,
             parameters={"fid": from_id, "tid": to_id},
         )
-        if er.get_next()[0] > 0:
+        if er and er[0][0] > 0:
             continue
 
         # Build edge properties — skip nulls
@@ -566,21 +594,31 @@ def main() -> None:
     p_dump.add_argument("--out", type=Path, default=DEFAULT_DUMP)
 
     p_restore = sub.add_parser("restore", help="Restore graph from JSON dump.")
-    p_restore.add_argument("--db",   type=Path, default=DEFAULT_DB_PATH)
-    p_restore.add_argument("--dump", type=Path, default=DEFAULT_DUMP)
+    p_restore.add_argument("--db",    type=Path, default=DEFAULT_DB_PATH)
+    p_restore.add_argument("--dump",  type=Path, default=DEFAULT_DUMP)
+    p_restore.add_argument(
+        "--reset",
+        action="store_true",
+        help="Drop and reinitialise the database before restoring (safe migration path).",
+    )
 
     args = parser.parse_args()
 
-    if not args.db.exists():
-        print(f"no database at {args.db}")
-        return
-
-    db   = kuzu.Database(str(args.db))
-    conn = kuzu.Connection(db)
-
     if args.cmd == "dump":
+        if not args.db.exists():
+            print(f"no database at {args.db}")
+            return
+        conn = open_graph(args.db)
         dump(conn, args.out)
+
     elif args.cmd == "restore":
+        if args.reset:
+            from preambulate.init import init as init_db
+            init_db(args.db, reset=True)
+        elif not args.db.exists():
+            print(f"no database at {args.db} — run 'preambulate init' or pass --reset")
+            return
+        conn = open_graph(args.db)
         restore(conn, args.dump)
         verify(conn)
 

@@ -3,7 +3,7 @@
 _Owner: preambulate (this repo)_
 _Counterpart: preambulate-web/interface/client-web.md_
 _Schema version: 2.0_
-_Last reconciled: 2026-03-27_
+_Last reconciled: 2026-03-29 (WSL migration complete; spawn mechanism confirmed)_
 
 This file defines what the preambulate client requires from the web backend.
 Read alongside `preambulate-web/interface/client-web.md` for the full picture.
@@ -26,6 +26,21 @@ Per-user keys and multi-tenant namespacing are deferred to v2.
 
 ---
 
+## Encryption
+
+Push payloads are encrypted client-side with a Fernet key stored at
+`~/.preambulate/{project_id}.key` (0o600). The server stores opaque
+ciphertext only — it cannot read graph content.
+
+Push `Content-Type`: `application/octet-stream` (encrypted binary).
+Pull response body: opaque ciphertext, decrypted client-side after receipt.
+
+Key rotation: `preambulate sync rotate` — pull → POST /keys/rotate →
+replace local key → push full graph re-encrypted. API key and encryption
+key rotate atomically from the client's perspective.
+
+---
+
 ## Request Headers (all requests)
 
 | Header | Example | Required |
@@ -33,8 +48,8 @@ Per-user keys and multi-tenant namespacing are deferred to v2.
 | `Authorization` | `Bearer prm_live_abc123` | Yes — 401 if missing/wrong |
 | `X-Preambulate-Project` | `myapp` | Yes — 400 if missing |
 | `X-Preambulate-Schema` | `2.0` | Yes — 409 if wrong value |
-| `X-Preambulate-Machine` | `a1b2c3d4-...` | No — fully ignored by server in v1 |
-| `X-Preambulate-Timestamp` | `2026-03-27T22:00:00Z` | No |
+| `X-Preambulate-Machine` | `a1b2c3d4-...` | No — ignored in v1, reserved for agent auth in v2 |
+| `X-Preambulate-Timestamp` | `2026-03-29T00:00:00Z` | No |
 | `User-Agent` | `preambulate-client/1.0` | No |
 
 ---
@@ -43,24 +58,41 @@ Per-user keys and multi-tenant namespacing are deferred to v2.
 
 ### Push — `POST /sync?op=push`
 
-Additional header: `Content-Type: application/json`
+`Content-Type: application/octet-stream` (encrypted payload)
 
-Body: JSON with shape:
+Decrypted body shape:
 ```json
 {
+  "version": "2.0",
   "nodes": {
-    "Decision": [ { "id": "uuid", ... } ],
-    "Artifact": [ { "id": "uuid", ... } ]
+    "Decision":    [ { "id": "uuid", ... } ],
+    "Artifact":    [ { "id": "uuid", ... } ],
+    "Cluster":     [ { "id": "uuid", "label": "...", "phase": "A|B", ... } ],
+    "Concept":     [ { "id": "uuid", ... } ],
+    "Observation": [ { "id": "uuid", ... } ],
+    "Context":     [ { "id": "uuid", ... } ]
   },
   "edges": [
-    { "type": "ANCHORS", "from": "uuid", "to": "uuid", ... }
+    { "rel": "ANCHORS", "from_type": "Decision", "to_type": "Artifact", "from_id": "uuid", "to_id": "uuid", ... }
   ]
 }
 ```
 
-Push is incremental — only nodes/edges since last push. Server merges,
-does not replace. First-write-wins on id collision. Edge dedup key:
-`rel|from_type|to_type|from_id|to_id`.
+**Push is a full replace.** The server stores incoming bytes verbatim via
+`R2.put()` — no merge, no dedup. If the client sends a delta, the remote
+graph is replaced with only that delta. All merge logic is client-side.
+
+Correct push cycle:
+1. Pull current remote (decrypt locally)
+2. Merge remote into local graph (`merge_remote()`)
+3. Dump full local graph (`dump_since(conn, None)`)
+4. Encrypt and push
+
+The `--full` flag on `preambulate sync push` is currently the only safe
+mode. Incremental push (`dump_since(conn, since)`) is unsafe until the
+pull-merge-push cycle is implemented. **This is a known bug — tracked.**
+
+Cluster nodes are included in the full dump and transfer correctly.
 
 **Expected responses:**
 
@@ -69,39 +101,48 @@ does not replace. First-write-wins on id collision. Edge dedup key:
 | `200` | Accepted | Record push timestamp |
 | `400` | Missing required header or bad op | Print error body |
 | `401` | Bad or missing API key | Print "Invalid API key — check PREAMBULATE_API_KEY" |
-| `409` | Schema mismatch | Print `expected` field from body, abort |
 | `402` | Account not authorized | Print "Sync not authorized — visit preambulate.dev to activate your account" |
+| `409` | Schema mismatch | Print `expected` field from body, abort |
 | `413` | Payload too large | Print `max_bytes` from body, abort |
 
 ---
 
 ### Pull — `GET /sync?op=pull&project={name}`
 
+Response body: encrypted ciphertext. Client decrypts and merges into local db.
+
 **Expected responses:**
 
 | Status | Meaning | Client behavior |
 |---|---|---|
-| `200` | Graph returned | Merge into local db |
+| `200` | Graph returned | Decrypt, merge into local db |
 | `404` | No remote graph yet | No-op — normal for new projects |
 | `400` | Missing project / bad op | Print error body |
 | `401` | Bad or missing API key | Print actionable message, abort |
-| `402` | Account not authorized | Print "Sync not authorized — visit preambulate.dev to activate your account" |
+| `402` | Account not authorized | Print actionable message, abort |
 | `409` | Schema mismatch | Print `expected` field from body, abort |
 
-Pull response body (200): full merged graph as JSON. Includes `ETag` header
-(not enforced for conditional requests yet, reserved for future use).
+Includes `ETag` header (reserved — not yet used for conditional requests).
+
+---
+
+### Key Rotation — `POST /keys/rotate`
+
+Called by `preambulate sync rotate`. No request body — auth via Bearer token only.
+
+Expected responses: `200` with new key in body, `401` (revoked/invalid key).
 
 ---
 
 ## Payload Size
 
-Server enforces **10 MB** — checked on `Content-Length` before reading body,
-then on actual byte count. Returns `413` with:
+Server enforces **10 MB** — checked on `Content-Length` before reading body.
+Returns `413` with:
 ```json
 { "error": "payload too large", "max_bytes": 10485760 }
 ```
 
-Client guard is set to match: pushes over 10 MB are rejected before sending.
+Client guard matches: pushes over 10 MB are rejected before sending.
 
 ---
 
@@ -118,43 +159,137 @@ Schema mismatch returns `409`:
 
 ## Storage Namespacing
 
-v1 is single-tenant. R2 path: `projects/${project}/graph.json`.
-Project name must be treated as globally unique within the deployment.
+v1 is single-tenant. R2 path: `projects/${project}/graph.bin`.
 
-v2 plan (not yet built): `users/${userId}/projects/${project}/graph.json`
+v2 plan: `users/${userId}/projects/${project}/graph.json`
 with userId derived from a per-user key lookup table.
 
 ---
 
-## Questions for preambulate-web
+## Agent Spawning Protocol
 
-_Answer these in `preambulate-web/interface/client-web.md`._
+When a preambulate session has work that requires a response from preambulate-web,
+it should not require the user to manually open the other repo and relay context.
+The graph is the communication channel. The sync backend is the transport.
 
-**Q7: Signup page status**
-Is the signup page built and deployed? Can a new user visit it, authenticate
-via GitHub OAuth, and receive a `prm_live_` API key? If not, what's missing?
+### Team model
 
-**Q8: Payment gating**
-Open signup with no rate limiting means a single user could spawn hundreds of
-agents, each pushing on every response, and flood the backend before we notice.
-Two guards are needed:
+Two agent patterns are supported:
 
-- **v1 — manual authorization flag**: Add `is_authorized` boolean to the D1
-  `users` table. Worker checks this flag before accepting any push or pull.
-  Unauthorized users get `402` with body `{ "error": "account_not_authorized" }`.
-  Operator sets the flag manually per approved user. No Stripe required yet.
-  Client should surface 402 with message: "Sync not authorized — contact
-  preambulate.dev to activate your account."
+**Subagent** — spawned agent sends a contract proposal directly to the coordinator.
+Coordinator validates via graph traversal and commits if approved.
 
-- **v1 — edge rate limiting**: Apply a Cloudflare Rate Limiting rule to the Worker
-  capping pushes per API key per hour (suggested: 120/hour = 2/minute sustained).
-  No Worker code change needed — configured at the Cloudflare edge.
+**Team** — spawned agents negotiate a proposal between themselves first, reach
+agreement, then send the agreed proposal to the coordinator. The coordinator
+validates the agreed change and commits. Use this when both sides own part of
+the interface (e.g. preambulate + preambulate-web on this contract).
 
-**Q9: Agent authorization (v2 design)**
-One API key should not authorize unlimited agent children. Design question for v2:
-should agents share a push quota with the parent key, or get sub-keys with
-individual limits? `X-Preambulate-Machine` (currently ignored) is the natural
-identity carrier for per-agent tracking. Propose a design in `client-web.md`.
+In both cases the **coordinator is the single writer** to contract files.
+
+The coordinator does not search the codebase to validate proposals — it traverses
+the graph. Rationale chains, edge relationships, and anchored decisions carry the
+context needed to check for conflicts. This is why every decision has rationale
+and every edge has a reason.
+
+### Proposal convention
+
+A contract proposal is a `Decision` node with:
+- `decision_type: "contract_proposal"` — teammate signals a proposed change
+- `decision_type: "contract_agreed"` — counterpart has accepted; ready for coordinator
+- `label`: short description of what is proposed
+- `rationale`: full context and which contract section is affected
+- `session_id`: originating session
+- `machine_id`: originating repo/machine identity
+
+The Decision is anchored (`ANCHORS`) to the contract `Artifact` node it concerns.
+Coordinator picks up `"contract_agreed"` nodes, not raw proposals.
+
+### Contract Artifact convention
+
+Both graphs must contain an `Artifact` node for both contract files. The canonical
+path is the shared key — not a UUID, since UUIDs differ per graph.
+
+| Contract file | Canonical artifact path |
+|---|---|
+| This file | `interface/web-client.md` |
+| Counterpart | `interface/client-web.md` |
+
+### Subgraph delivery
+
+A spawned agent does not need the full graph — it needs the neighborhood around
+the contract node. The existing `preambulate briefing --focal interface/web-client.md`
+query serves this purpose. No new transport is needed.
+
+### Spawn mechanism
+
+```
+claude --print "<prompt>" --cwd ~/source/repos/preambulate-web
+```
+
+Prompt payload (three parts):
+1. Path to preambulate's interface contract
+2. Path to preambulate-web's interface contract
+3. `preambulate briefing --focal interface/web-client.md` — plaintext graph
+   context targeting the contract neighborhood; does not cross encryption boundary
+
+Repos must be on the native WSL filesystem for path and subprocess reliability.
+Migration complete as of 2026-03-29.
+
+### Spawn trigger
+
+Today the coordinator initiates spawning explicitly. Planned improvement: the Stop
+hook POSTs a lightweight notification (project name + contract path) to a `/notify`
+endpoint; the counterpart's next SessionStart pulls it before running capture. No
+new infrastructure — one new endpoint on the Worker.
+
+Design proposed in `preambulate-web/interface/client-web.md`.
+
+### Responses to preambulate-web spawning questions (2026-03-29)
+
+**WSL path:** Migration complete as of 2026-03-29. Both repos now at
+`~/source/repos/preambulate` and `~/source/repos/preambulate-web` on the native
+WSL filesystem. Spawning protocol can proceed.
+
+**Spawn mechanism:** Accepted. `claude --print "<prompt>" --cwd ~/source/repos/preambulate-web`
+is the spawn call. Three-part payload: both contract paths + `preambulate briefing
+--focal interface/web-client.md` output as plaintext context.
+
+**Completion signal:** Prefer **contract timestamp** — update `_Last reconciled:`
+when the spawned agent finishes. No new files needed. Git commit is implicit.
+
+---
+
+## Open Questions
+
+**Q10: Key validation and re-registration**
+_Answered by preambulate-web 2026-03-29._
+
+No `/auth/validate` endpoint — the next push/pull provides the 401 signal.
+
+Client behavior on 401:
+- Print: `"API key rejected — run 'preambulate sync register' to get a new key"`
+- `preambulate sync register` opens `https://preambulate.dev` in the browser
+  (or prints the URL if headless). User re-authenticates via GitHub OAuth,
+  receives new `prm_live_` key, updates `PREAMBULATE_API_KEY`.
+
+**preambulate:** `preambulate sync register` implemented — opens `https://preambulate.dev`
+in browser (or prints URL if headless). No server change required.
+
+---
+
+## Open Questions for v2
+
+**Agent authorization**
+One API key should not authorize unlimited agent children. Design options:
+- Agents share a push quota with the parent key
+- Agents get sub-keys with individual limits
+`X-Preambulate-Machine` (currently ignored) is the natural identity carrier.
+Propose a design in `preambulate-web/interface/client-web.md`.
+
+**Multi-device session management**
+Last-sign-in-wins: each new GitHub OAuth sign-in revokes all previous keys.
+A user authenticating from a second device loses their first device's key
+silently. Needs session management or a warning on the key display page.
 
 ---
 
@@ -164,16 +299,14 @@ identity carrier for per-agent tracking. Propose a design in `client-web.md`.
 |---|---|
 | Storage collision risk | Not applicable in v1 — single tenant |
 | Per-user keys | v2 |
-| Rate limiting | None in v1 — Cloudflare free tier is practical ceiling (Q8 supersedes this) |
-| X-Preambulate-Machine server use | Fully ignored in v1, reserved for agent authorization in v2 |
+| Rate limiting | Cloudflare edge rule, 120 pushes/hour per API key |
+| X-Preambulate-Machine server use | Ignored in v1, reserved for agent authorization in v2 |
 | 403 per-project auth | v2 |
-| Schema mismatch status code | Already 409 — confirmed correct |
-| Signup page | Built and deployed — GitHub OAuth, prm_live_ key, resolved 2026-03-27 |
-| Payment gating | is_authorized flag in D1, 402 response, edge rate limiting at 120/hour |
-| Agent authorization | Sub-key model designed, deferred to v2. X-Preambulate-Machine is the identity carrier |
-
-## Known v1 Limitations
-
-**Last-sign-in-wins**: Each new GitHub OAuth sign-in revokes all previous keys. A user
-who authenticates from a second device loses their first device's key silently. Needs
-either session management or a warning on the key display page before wider rollout.
+| Schema mismatch status code | 409 — confirmed |
+| Signup page | Built and deployed — GitHub OAuth, prm_live_ key |
+| Payment gating | is_authorized flag in D1, 402 response, edge rate limiting |
+| Agent authorization | Sub-key model, deferred to v2 |
+| Payload encryption | Fernet, client-side only — server stores opaque ciphertext |
+| Cluster nodes in payload | Included in push/pull as of 2026-03-29 — server handles as opaque JSON |
+| Sync validation (2026-03-29) | Full push: 392 nodes, 620 edges transferred. Pull: 392 nodes recognized, 0 duplicated. Round-trip clean. |
+| source ~/.bashrc key override | `source ~/.bashrc` does not override an already-exported variable in the current shell. Re-registration flow must account for this — see Q10. |

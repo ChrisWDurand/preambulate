@@ -18,9 +18,8 @@ import sys
 import uuid
 from pathlib import Path
 
-import kuzu
-
 from preambulate import get_db_path, get_project_dir
+from preambulate.graph import open_graph
 from preambulate.decision import DT_INFERRED, RS_CLAUDE_INFERRED, create_decision_node
 
 
@@ -56,16 +55,13 @@ def capture_artifact(
     if rel_path.startswith("memory.db"):
         return
 
-    db   = kuzu.Database(str(db_path))
-    conn = kuzu.Connection(db)
+    conn = open_graph(db_path)
 
-    result = conn.execute(
+    rows = conn.execute(
         "MATCH (a:Artifact {path: $path}) RETURN a.id LIMIT 1",
         parameters={"path": rel_path},
     )
-    artifact_id = None
-    while result.has_next():
-        artifact_id = result.get_next()[0]
+    artifact_id = rows[0][0] if rows else None
 
     is_new      = artifact_id is None
     anchor_type = "created" if is_new else "modified"

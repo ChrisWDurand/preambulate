@@ -27,7 +27,7 @@ Combine both in one call:
         --edge "briefing.py|INSTANTIATES|memory-briefing" \\
         --edge-rationale "..."
 
-Supported --edge relationship types: INSTANTIATES, DERIVES_FROM, RESONATES_WITH
+Supported --edge relationship types: GOVERNS, INSTANTIATES, DERIVES_FROM, RESONATES_WITH
 
 Edge resolution: src/tgt strings are matched first against Artifact.path,
 then against Concept.label.  A --concept entry must precede any --edge that
@@ -49,9 +49,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-import kuzu
-
 from preambulate import get_db_path
+from preambulate.graph import GraphConnection, open_graph
 from preambulate.identity import author as get_author, get_machine_id
 
 
@@ -61,13 +60,15 @@ from preambulate.identity import author as get_author, get_machine_id
 
 DEFAULT_DB_PATH = get_db_path()
 
-SUPPORTED_RELS = {"INSTANTIATES", "DERIVES_FROM", "RESONATES_WITH"}
+SUPPORTED_RELS = {"GOVERNS", "INSTANTIATES", "DERIVES_FROM", "RESONATES_WITH"}
 
 # decision_type enum values (stored as STRING in Kuzu)
-DT_USER       = "user"
-DT_INFERRED   = "claude_inferred"
-DT_AUTONOMOUS = "claude_autonomous"
-DT_BLOCKED    = "blocked"
+DT_USER              = "user"
+DT_INFERRED          = "claude_inferred"
+DT_AUTONOMOUS        = "claude_autonomous"
+DT_BLOCKED           = "blocked"
+DT_CONTRACT_PROPOSAL = "contract_proposal"
+DT_CONTRACT_AGREED   = "contract_agreed"
 
 # rationale_source enum values
 RS_USER_STATED     = "user_stated"
@@ -92,7 +93,7 @@ def now() -> datetime:
 # ------------------------------------------------------------
 
 def create_decision_node(
-    conn: kuzu.Connection,
+    conn: GraphConnection,
     session_id: str,
     label: str,
     rationale: str,
@@ -136,25 +137,25 @@ def create_decision_node(
 # Node resolution
 # ------------------------------------------------------------
 
-def _resolve_node(conn: kuzu.Connection, ref: str) -> Optional[tuple[str, str]]:
+def _resolve_node(conn: GraphConnection, ref: str) -> Optional[tuple[str, str]]:
     """
     Resolve a string reference to (node_type, node_id).
     Checks Artifact.path first, then Concept.label.
     Returns None if not found.
     """
-    r = conn.execute(
+    rows = conn.execute(
         "MATCH (a:Artifact {path: $ref}) RETURN a.id LIMIT 1",
         parameters={"ref": ref},
     )
-    if r.has_next():
-        return ("Artifact", r.get_next()[0])
+    if rows:
+        return ("Artifact", rows[0][0])
 
-    r = conn.execute(
+    rows = conn.execute(
         "MATCH (c:Concept {label: $ref}) RETURN c.id LIMIT 1",
         parameters={"ref": ref},
     )
-    if r.has_next():
-        return ("Concept", r.get_next()[0])
+    if rows:
+        return ("Concept", rows[0][0])
 
     return None
 
@@ -163,17 +164,17 @@ def _resolve_node(conn: kuzu.Connection, ref: str) -> Optional[tuple[str, str]]:
 # Concept upsert
 # ------------------------------------------------------------
 
-def ensure_concept(conn: kuzu.Connection, label: str, definition: str) -> str:
+def ensure_concept(conn: GraphConnection, label: str, definition: str) -> str:
     """
     Ensure a Concept node exists for this label.  Creates it at depth 1
     if new.  Returns the concept ID.
     """
-    r = conn.execute(
+    rows = conn.execute(
         "MATCH (c:Concept {label: $label}) RETURN c.id LIMIT 1",
         parameters={"label": label},
     )
-    if r.has_next():
-        cid = r.get_next()[0]
+    if rows:
+        cid = rows[0][0]
         print(f"preambulate: concept exists [{label}]")
         return cid
 
@@ -203,7 +204,7 @@ def ensure_concept(conn: kuzu.Connection, label: str, definition: str) -> str:
 # ------------------------------------------------------------
 
 def write_edge(
-    conn: kuzu.Connection,
+    conn: GraphConnection,
     src_ref: str,
     rel: str,
     tgt_ref: str,
@@ -237,7 +238,18 @@ def write_edge(
             "created_at":     ts,
             "rationale":      rationale,
         }
-        if rel == "INSTANTIATES":
+        if rel == "GOVERNS":
+            conn.execute(
+                f"""
+                MATCH (s:{s_type} {{id: $s_id}}), (t:{t_type} {{id: $t_id}})
+                CREATE (s)-[:GOVERNS {{
+                    weight: $weight, traversal_cost: $traversal_cost,
+                    created_at: $created_at, rationale: $rationale
+                }}]->(t)
+                """,
+                parameters=base,
+            )
+        elif rel == "INSTANTIATES":
             conn.execute(
                 f"""
                 MATCH (s:{s_type} {{id: $s_id}}), (t:{t_type} {{id: $t_id}})
@@ -285,7 +297,7 @@ def write_edge(
 # ------------------------------------------------------------
 
 def record_decision(
-    conn: kuzu.Connection,
+    conn: GraphConnection,
     session_id: str,
     label: str,
     rationale: str,
@@ -305,13 +317,11 @@ def record_decision(
         if not rel_path:
             continue
 
-        result = conn.execute(
+        rows = conn.execute(
             "MATCH (a:Artifact {path: $path}) RETURN a.id LIMIT 1",
             parameters={"path": rel_path},
         )
-        artifact_id = None
-        while result.has_next():
-            artifact_id = result.get_next()[0]
+        artifact_id = rows[0][0] if rows else None
 
         if artifact_id is None:
             continue
@@ -358,6 +368,11 @@ def main() -> None:
     # Decision args (optional as a group — all required together if --label given)
     parser.add_argument("--label",     default=None, help="One-line summary of work done")
     parser.add_argument("--rationale", default=None, help="Why key choices were made")
+    parser.add_argument(
+        "--decision-type",
+        default=DT_USER,
+        help=f"Decision type (default: {DT_USER}). Use '{DT_CONTRACT_PROPOSAL}' or '{DT_CONTRACT_AGREED}' for agent contract proposals.",
+    )
     parser.add_argument(
         "--touched",
         default="",
@@ -413,8 +428,7 @@ def main() -> None:
         print(f"preambulate: no database at {args.db}, skipping")
         return
 
-    db   = kuzu.Database(str(args.db))
-    conn = kuzu.Connection(db)
+    conn = open_graph(args.db)
 
     # 1. Write Decision node
     if args.label is not None:
@@ -426,6 +440,7 @@ def main() -> None:
             rationale=args.rationale,
             touched=touched,
             db_path=args.db,
+            decision_type=args.decision_type,
         )
 
     # 2. Ensure concepts (must precede edges that reference them)

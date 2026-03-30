@@ -15,12 +15,12 @@ import asyncio
 import os
 from typing import Any
 
-import kuzu
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from preambulate import get_db_path
+from preambulate.graph import GraphConnection, open_graph
 from preambulate.briefing import query_briefing
 from preambulate.decision import ensure_concept, new_id, record_decision, write_edge
 
@@ -43,12 +43,11 @@ server = Server("preambulate", instructions=_INSTRUCTIONS)
 # DB helper
 # ------------------------------------------------------------
 
-def _open_conn() -> kuzu.Connection | None:
+def _open_conn() -> GraphConnection | None:
     db_path = get_db_path()
     if not db_path.exists():
         return None
-    db = kuzu.Database(str(db_path))
-    return kuzu.Connection(db)
+    return open_graph(db_path)
 
 
 # ------------------------------------------------------------

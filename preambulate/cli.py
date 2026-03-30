@@ -11,6 +11,7 @@ _COMMANDS = {
     "capture":  "preambulate.capture",
     "artifact": "preambulate.artifact",
     "infer":    "preambulate.infer",
+    "cluster":  "preambulate.cluster",
     "decision": "preambulate.decision",
     "briefing": "preambulate.briefing",
     "sync":     "preambulate.sync",
@@ -27,6 +28,7 @@ Commands:
   capture    Record a session-start Decision node (SessionStart hook)
   artifact   Record a file edit as Artifact + Decision (PostToolUse hook)
   infer      Infer DERIVES_FROM edges from Python import statements
+  cluster    Discover artifact clusters via community detection
   decision   Record a session-end Decision and/or write semantic edges
   briefing   Print the memory briefing (read-only; --focal for proximity mode)
   sync       Push or pull the graph snapshot to/from api.preambulate.dev
