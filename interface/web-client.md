@@ -166,40 +166,53 @@ with userId derived from a per-user key lookup table.
 
 ---
 
-## Agent Spawning Protocol (proposed — under negotiation with preambulate-web)
+## Agent Spawning Protocol
 
 When a preambulate session has work that requires a response from preambulate-web,
 it should not require the user to manually open the other repo and relay context.
 The graph is the communication channel. The sync backend is the transport.
 
-### Message convention
+### Team model
 
-An inter-agent message is a `Decision` node with:
-- `decision_type: "agent_message"` (new value — requires schema update)
-- `label`: short description of what is needed
-- `rationale`: full context, including which question in the contract requires action
+Two agent patterns are supported:
+
+**Subagent** — spawned agent sends a contract proposal directly to the coordinator.
+Coordinator validates via graph traversal and commits if approved.
+
+**Team** — spawned agents negotiate a proposal between themselves first, reach
+agreement, then send the agreed proposal to the coordinator. The coordinator
+validates the agreed change and commits. Use this when both sides own part of
+the interface (e.g. preambulate + preambulate-web on this contract).
+
+In both cases the **coordinator is the single writer** to contract files.
+
+The coordinator does not search the codebase to validate proposals — it traverses
+the graph. Rationale chains, edge relationships, and anchored decisions carry the
+context needed to check for conflicts. This is why every decision has rationale
+and every edge has a reason.
+
+### Proposal convention
+
+A contract proposal is a `Decision` node with:
+- `decision_type: "contract_proposal"` — teammate signals a proposed change
+- `decision_type: "contract_agreed"` — counterpart has accepted; ready for coordinator
+- `label`: short description of what is proposed
+- `rationale`: full context and which contract section is affected
 - `session_id`: originating session
 - `machine_id`: originating repo/machine identity
 
 The Decision is anchored (`ANCHORS`) to the contract `Artifact` node it concerns.
-
-On push, the message reaches the sync backend. On the receiving agent's next
-`SessionStart`, `preambulate capture` surfaces it in the briefing under a new
-section: **"Messages from other agents"** — distinct from regular decisions.
+Coordinator picks up `"contract_agreed"` nodes, not raw proposals.
 
 ### Contract Artifact convention
 
-For an anchor to be meaningful across repos, both graphs must contain an
-`Artifact` node for the contract file. The path used as the anchor must be
-agreed between both sides. Proposed canonical paths:
+Both graphs must contain an `Artifact` node for both contract files. The canonical
+path is the shared key — not a UUID, since UUIDs differ per graph.
 
 | Contract file | Canonical artifact path |
 |---|---|
 | This file | `interface/web-client.md` |
 | Counterpart | `interface/client-web.md` |
-
-Each repo registers its own contract artifact. Cross-repo references use the
-canonical path as a shared key — not a UUID, since UUIDs differ per graph.
 
 ### Subgraph delivery
 
@@ -207,24 +220,14 @@ A spawned agent does not need the full graph — it needs the neighborhood aroun
 the contract node. The existing `preambulate briefing --focal interface/web-client.md`
 query serves this purpose. No new transport is needed.
 
-### What preambulate-web needs to provide
+### Spawn trigger
 
-- Confirm `decision_type: "agent_message"` is acceptable as an opaque value
-  (server stores it without inspection — no change required server-side)
-- Confirm the briefing pull on SessionStart will surface new Decision nodes
-  of this type prominently (client-side change in `capture.py` / `briefing.py`)
-- Agree on canonical contract artifact paths (table above)
+Today, someone must open preambulate-web for a proposal to be acted on. Planned
+improvement: the Stop hook POSTs a lightweight notification (project name +
+contract path) to a `/notify` endpoint; the counterpart's next SessionStart pulls
+it before running capture. No new infrastructure — one new endpoint on the Worker.
 
-### Open design question
-
-**Spawn trigger**: today, someone must open preambulate-web for the message to
-be acted on. A future improvement: the Stop hook could POST a lightweight
-notification (project name + contract path) to a `/notify` endpoint, which
-the preambulate-web server stores. The next SessionStart in that repo pulls
-the notification before running capture. No new infrastructure — one new
-endpoint on the existing Worker.
-
-Propose design in `preambulate-web/interface/client-web.md`.
+Design proposed in `preambulate-web/interface/client-web.md`.
 
 ### Responses to preambulate-web spawning questions (2026-03-29)
 
