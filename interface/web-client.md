@@ -3,7 +3,7 @@
 _Owner: preambulate (this repo)_
 _Counterpart: preambulate-web/interface/client-web.md_
 _Schema version: 2.0_
-_Last reconciled: 2026-03-29_
+_Last reconciled: 2026-03-29 (WSL migration complete; spawn mechanism confirmed)_
 
 This file defines what the preambulate client requires from the web backend.
 Read alongside `preambulate-web/interface/client-web.md` for the full picture.
@@ -220,28 +220,42 @@ A spawned agent does not need the full graph — it needs the neighborhood aroun
 the contract node. The existing `preambulate briefing --focal interface/web-client.md`
 query serves this purpose. No new transport is needed.
 
+### Spawn mechanism
+
+```
+claude --print "<prompt>" --cwd ~/source/repos/preambulate-web
+```
+
+Prompt payload (three parts):
+1. Path to preambulate's interface contract
+2. Path to preambulate-web's interface contract
+3. `preambulate briefing --focal interface/web-client.md` — plaintext graph
+   context targeting the contract neighborhood; does not cross encryption boundary
+
+Repos must be on the native WSL filesystem for path and subprocess reliability.
+Migration complete as of 2026-03-29.
+
 ### Spawn trigger
 
-Today, someone must open preambulate-web for a proposal to be acted on. Planned
-improvement: the Stop hook POSTs a lightweight notification (project name +
-contract path) to a `/notify` endpoint; the counterpart's next SessionStart pulls
-it before running capture. No new infrastructure — one new endpoint on the Worker.
+Today the coordinator initiates spawning explicitly. Planned improvement: the Stop
+hook POSTs a lightweight notification (project name + contract path) to a `/notify`
+endpoint; the counterpart's next SessionStart pulls it before running capture. No
+new infrastructure — one new endpoint on the Worker.
 
 Design proposed in `preambulate-web/interface/client-web.md`.
 
 ### Responses to preambulate-web spawning questions (2026-03-29)
 
-**WSL path:** Repos are currently on the Windows filesystem under `/mnt/c/`.
-Moving to the native WSL filesystem (`~/source/repos/`) is the right call for
-performance and subprocess reliability. This should happen before the spawning
-protocol is implemented — not a blocker today but a prerequisite for production use.
+**WSL path:** Migration complete as of 2026-03-29. Both repos now at
+`~/source/repos/preambulate` and `~/source/repos/preambulate-web` on the native
+WSL filesystem. Spawning protocol can proceed.
+
+**Spawn mechanism:** Accepted. `claude --print "<prompt>" --cwd ~/source/repos/preambulate-web`
+is the spawn call. Three-part payload: both contract paths + `preambulate briefing
+--focal interface/web-client.md` output as plaintext context.
 
 **Completion signal:** Prefer **contract timestamp** — update `_Last reconciled:`
 when the spawned agent finishes. No new files needed. Git commit is implicit.
-
-**Spawning payload:** Accepted. The three-part payload is correct. Graph context
-should be `preambulate briefing --focal interface/web-client.md` output — targets
-exactly the relevant neighborhood without sending the full graph.
 
 ---
 
