@@ -47,13 +47,21 @@ def now() -> datetime:
 # ------------------------------------------------------------
 
 def _fetch_nodes(conn: GraphConnection, phase: str) -> list[str]:
-    """Return artifact paths for the given phase."""
+    """Return artifact paths for the given phase.
+
+    Phase A excludes package __init__.py files — they are gateways that
+    connect modules to a package but do not represent conceptual centers.
+    Including them collapses all importing modules into a single community
+    (the gravity well problem), which constrains free exploration.
+    """
     if phase == "A":
         rows = conn.execute(
             """
             MATCH (a:Artifact)
             WHERE a.kind IN ['module', 'file', 'document']
               AND NOT a.path CONTAINS '::'
+              AND NOT a.path ENDS WITH '/__init__.py'
+              AND NOT a.path = '__init__.py'
             RETURN a.path
             """
         )
