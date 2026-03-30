@@ -42,7 +42,7 @@ from preambulate import get_db_path, get_project_dir
 from preambulate.export import dump_since, merge_remote
 from preambulate.graph import open_graph
 from preambulate.identity import get_machine_id
-from preambulate.keystore import decrypt, encrypt, key_exists, replace_key
+from preambulate.keystore import decrypt, encrypt, key_exists, load_api_key, replace_key, save_api_key
 from preambulate.sync_state import get_last_push_dt, record_pull, record_push
 
 
@@ -146,7 +146,7 @@ def _push(
         record_push(project_root, "ok")
     except HTTPError as exc:
         if exc.code == 401:
-            print("preambulate sync: push failed — invalid API key (check PREAMBULATE_API_KEY)")
+            print("preambulate sync: push failed — invalid API key (run 'preambulate sync register' to get a new key)")
         elif exc.code == 402:
             print("preambulate sync: push failed — sync not authorized (visit preambulate.dev to activate your account)")
         elif exc.code == 409:
@@ -211,7 +211,7 @@ def _pull(
             print(f"preambulate sync: no remote graph for '{project}' yet — skipping pull")
             return
         if exc.code == 401:
-            print("preambulate sync: pull failed — invalid API key (check PREAMBULATE_API_KEY)")
+            print("preambulate sync: pull failed — invalid API key (run 'preambulate sync register' to get a new key)")
         elif exc.code == 402:
             print("preambulate sync: pull failed — sync not authorized (visit preambulate.dev to activate your account)")
         elif exc.code == 409:
@@ -271,7 +271,8 @@ def _register() -> None:
     except Exception:
         print(f"preambulate sync: visit {url}")
     print("  sign in with GitHub to receive a new API key")
-    print("  then run: export PREAMBULATE_API_KEY=<your-key>")
+    print("  to persist the key across all shells, run:")
+    print("    preambulate sync save-key <your-key>")
 
 
 # ------------------------------------------------------------
@@ -354,9 +355,14 @@ def main() -> None:
     parser.add_argument(
         "op",
         nargs="?",
-        choices=["push", "pull", "rotate", "register"],
+        choices=["push", "pull", "rotate", "register", "save-key"],
         default="push",
-        help="Operation: push (default), pull, rotate (rotate API + encryption keys), or register (open signup page).",
+        help="Operation: push (default), pull, rotate, register, or save-key <key>.",
+    )
+    parser.add_argument(
+        "key_value",
+        nargs="?",
+        help="API key value for save-key operation.",
     )
     parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
     parser.add_argument(
@@ -366,8 +372,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--api-key",
-        default=os.environ.get("PREAMBULATE_API_KEY", ""),
-        help="API key (defaults to PREAMBULATE_API_KEY env var).",
+        default=os.environ.get("PREAMBULATE_API_KEY") or load_api_key(),
+        help="API key (defaults to PREAMBULATE_API_KEY env var, then ~/.preambulate/api_key).",
     )
     parser.add_argument(
         "--dry-run",
@@ -387,6 +393,14 @@ def main() -> None:
         _pull(args.db, args.endpoint, args.api_key, args.dry_run)
     elif args.op == "register":
         _register()
+    elif args.op == "save-key":
+        if not args.key_value:
+            print("preambulate sync: save-key requires a key value")
+            print("  usage: preambulate sync save-key <your-key>")
+        else:
+            save_api_key(args.key_value)
+            print(f"preambulate sync: API key saved to ~/.preambulate/api_key")
+            print("  key will be used automatically — no export needed")
     else:
         _rotate(args.db, args.endpoint, args.api_key)
 
