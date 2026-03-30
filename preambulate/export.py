@@ -6,16 +6,16 @@ into a freshly-initialised database.  Intended for schema migrations
 where init.py --reset would otherwise destroy live data.
 
 Usage:
-    python export.py dump                              # dump to graph_export.json
-    python export.py dump --out backup.json            # explicit output path
-    python export.py restore --dump graph_export.json  # restore into current DB
+    preambulate export dump                                    # dump to graph_export.json
+    preambulate export dump --out backup.json                  # explicit output path
+    preambulate export restore --dump graph_export.json        # restore (DB must be fresh)
+    preambulate export restore --dump graph_export.json --reset  # drop, reinit, restore
 
-Restore sequence for a schema migration:
-    python export.py dump
-    python init.py --reset
-    python export.py restore --dump graph_export.json
+Migration sequence (--reset handles steps 2-3 automatically):
+    preambulate export dump
+    preambulate export restore --dump graph_export.json --reset
 
-The restore step clears the seed geometry that init.py inserts (new UUIDs)
+The restore step clears the seed geometry that init inserts (new UUIDs)
 before re-importing the original nodes so that existing edges remain valid.
 """
 
@@ -150,7 +150,7 @@ def _deserial(key: str, v: object) -> object:
 
 def dump(conn: GraphConnection, out_path: Path) -> None:
     data: dict = {
-        "version":     "1.0",
+        "version":     "2.0",
         "exported_at": datetime.now(timezone.utc).isoformat(),
         "nodes":       {},
         "edges":       [],
@@ -254,10 +254,14 @@ def _restore_nodes(conn: GraphConnection, data: dict) -> int:
                 if (v := row.get(p)) is not None
             }
             placeholders = ", ".join(f"{p}: ${p}" for p in params)
-            conn.execute(
-                f"CREATE (n:{ntype} {{{placeholders}}})",
-                parameters=params,
-            )
+            try:
+                conn.execute(
+                    f"CREATE (n:{ntype} {{{placeholders}}})",
+                    parameters=params,
+                )
+            except RuntimeError as exc:
+                print(f"  warning: skipped {ntype} node ({exc})")
+                continue
             total += 1
         print(f"  {ntype}: restored {len(rows)} node(s)")
     return total
@@ -292,9 +296,15 @@ def _restore_edges(conn: GraphConnection, edges: list) -> int:
     return total
 
 
+CURRENT_VERSION = "2.0"
+
+
 def restore(conn: GraphConnection, dump_path: Path) -> None:
     data  = json.loads(dump_path.read_text(encoding="utf-8"))
-    print(f"restoring from {dump_path}  (exported {data['exported_at']})")
+    dump_version = data.get("version", "unknown")
+    print(f"restoring from {dump_path}  (exported {data['exported_at']}  version={dump_version})")
+    if dump_version != CURRENT_VERSION:
+        print(f"  warning: dump version {dump_version!r} does not match current {CURRENT_VERSION!r} — proceeding, unknown properties will be skipped")
 
     _clear_init_geometry(conn)
 
@@ -323,7 +333,10 @@ def verify(conn: GraphConnection) -> None:
 
     # Node counts
     for ntype in NODE_TYPES:
-        rows = conn.execute(f"MATCH (n:{ntype}) RETURN COUNT(*)")
+        try:
+            rows = conn.execute(f"MATCH (n:{ntype}) RETURN COUNT(*)")
+        except RuntimeError:
+            continue
         count = rows[0][0] if rows else 0
         if count:
             print(f"  {ntype}: {count}")
@@ -581,20 +594,31 @@ def main() -> None:
     p_dump.add_argument("--out", type=Path, default=DEFAULT_DUMP)
 
     p_restore = sub.add_parser("restore", help="Restore graph from JSON dump.")
-    p_restore.add_argument("--db",   type=Path, default=DEFAULT_DB_PATH)
-    p_restore.add_argument("--dump", type=Path, default=DEFAULT_DUMP)
+    p_restore.add_argument("--db",    type=Path, default=DEFAULT_DB_PATH)
+    p_restore.add_argument("--dump",  type=Path, default=DEFAULT_DUMP)
+    p_restore.add_argument(
+        "--reset",
+        action="store_true",
+        help="Drop and reinitialise the database before restoring (safe migration path).",
+    )
 
     args = parser.parse_args()
 
-    if not args.db.exists():
-        print(f"no database at {args.db}")
-        return
-
-    conn = open_graph(args.db)
-
     if args.cmd == "dump":
+        if not args.db.exists():
+            print(f"no database at {args.db}")
+            return
+        conn = open_graph(args.db)
         dump(conn, args.out)
+
     elif args.cmd == "restore":
+        if args.reset:
+            from preambulate.init import init as init_db
+            init_db(args.db, reset=True)
+        elif not args.db.exists():
+            print(f"no database at {args.db} — run 'preambulate init' or pass --reset")
+            return
+        conn = open_graph(args.db)
         restore(conn, args.dump)
         verify(conn)
 

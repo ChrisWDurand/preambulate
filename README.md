@@ -172,9 +172,10 @@ When the schema changes:
 
 ```bash
 preambulate export dump
-preambulate init --reset
-preambulate export restore --dump graph_export.json
+preambulate export restore --dump graph_export.json --reset
 ```
+
+`--reset` drops and reinitialises the database before restoring — no separate `init --reset` step needed.
 
 ---
 
