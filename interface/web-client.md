@@ -78,12 +78,21 @@ Decrypted body shape:
 }
 ```
 
-Push is incremental — only nodes/edges since last push. Server merges,
-does not replace. First-write-wins on id collision. Edge dedup key:
-`rel|from_type|to_type|from_id|to_id`.
+**Push is a full replace.** The server stores incoming bytes verbatim via
+`R2.put()` — no merge, no dedup. If the client sends a delta, the remote
+graph is replaced with only that delta. All merge logic is client-side.
 
-**Cluster nodes** are included in incremental pushes. The server stores
-them as opaque JSON alongside other node types — no special handling required.
+Correct push cycle:
+1. Pull current remote (decrypt locally)
+2. Merge remote into local graph (`merge_remote()`)
+3. Dump full local graph (`dump_since(conn, None)`)
+4. Encrypt and push
+
+The `--full` flag on `preambulate sync push` is currently the only safe
+mode. Incremental push (`dump_since(conn, since)`) is unsafe until the
+pull-merge-push cycle is implemented. **This is a known bug — tracked.**
+
+Cluster nodes are included in the full dump and transfer correctly.
 
 **Expected responses:**
 
@@ -119,9 +128,9 @@ Includes `ETag` header (reserved — not yet used for conditional requests).
 
 ### Key Rotation — `POST /keys/rotate`
 
-Called by `preambulate sync rotate`. Body: `{ "project": "<name>" }`.
+Called by `preambulate sync rotate`. No request body — auth via Bearer token only.
 
-Expected responses: `200` (rotated), `401`, `404` (no prior key on server).
+Expected responses: `200` with new key in body, `401` (revoked/invalid key).
 
 ---
 
@@ -150,7 +159,7 @@ Schema mismatch returns `409`:
 
 ## Storage Namespacing
 
-v1 is single-tenant. R2 path: `projects/${project}/graph.json`.
+v1 is single-tenant. R2 path: `projects/${project}/graph.bin`.
 
 v2 plan: `users/${userId}/projects/${project}/graph.json`
 with userId derived from a per-user key lookup table.
@@ -217,24 +226,37 @@ endpoint on the existing Worker.
 
 Propose design in `preambulate-web/interface/client-web.md`.
 
+### Responses to preambulate-web spawning questions (2026-03-29)
+
+**WSL path:** Repos are currently on the Windows filesystem under `/mnt/c/`.
+Moving to the native WSL filesystem (`~/source/repos/`) is the right call for
+performance and subprocess reliability. This should happen before the spawning
+protocol is implemented — not a blocker today but a prerequisite for production use.
+
+**Completion signal:** Prefer **contract timestamp** — update `_Last reconciled:`
+when the spawned agent finishes. No new files needed. Git commit is implicit.
+
+**Spawning payload:** Accepted. The three-part payload is correct. Graph context
+should be `preambulate briefing --focal interface/web-client.md` output — targets
+exactly the relevant neighborhood without sending the full graph.
+
 ---
 
 ## Open Questions
 
 **Q10: Key validation and re-registration**
-When a client holds a key that the server rejects with 401, there is no defined
-recovery path short of re-authenticating via the signup page. The client has no
-way to know whether the key was revoked, never registered, or is simply malformed.
+_Answered by preambulate-web 2026-03-29._
 
-Two things needed:
-- A `GET /auth/validate` endpoint (or equivalent) the client can call to confirm
-  its key is recognized — distinct from a push/pull so the failure message is
-  unambiguous.
-- A defined re-registration flow: either a CLI command (`preambulate sync register`)
-  that opens the signup URL, or a way for the server to communicate a key refresh
-  without requiring a browser.
+No `/auth/validate` endpoint — the next push/pull provides the 401 signal.
 
-Propose a design in `preambulate-web/interface/client-web.md`.
+Client behavior on 401:
+- Print: `"API key rejected — run 'preambulate sync register' to get a new key"`
+- `preambulate sync register` opens `https://preambulate.dev` in the browser
+  (or prints the URL if headless). User re-authenticates via GitHub OAuth,
+  receives new `prm_live_` key, updates `PREAMBULATE_API_KEY`.
+
+**preambulate to implement:** `preambulate sync register` subcommand.
+No server change required.
 
 ---
 
