@@ -207,3 +207,5 @@ silently. Needs session management or a warning on the key display page.
 | Agent authorization | Sub-key model, deferred to v2 |
 | Payload encryption | Fernet, client-side only — server stores opaque ciphertext |
 | Cluster nodes in payload | Included in push/pull as of 2026-03-29 — server handles as opaque JSON |
+| Sync validation (2026-03-29) | Full push: 392 nodes, 620 edges transferred. Pull: 392 nodes recognized, 0 duplicated. Round-trip clean. |
+| source ~/.bashrc key override | `source ~/.bashrc` does not override an already-exported variable in the current shell. Re-registration flow must account for this — see Q10. |

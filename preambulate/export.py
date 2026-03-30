@@ -365,7 +365,12 @@ def dump_since(conn: GraphConnection, since: datetime | None) -> dict:
     }
 
     for ntype in NODE_TYPES:
-        props     = NODE_PROPS[ntype]
+        props = NODE_PROPS[ntype]
+        try:
+            conn.execute(f"MATCH (n:{ntype}) RETURN n.id LIMIT 0")
+        except RuntimeError:
+            data["nodes"][ntype] = []
+            continue
         available = [
             p for p in props
             if _prop_exists(conn, ntype, p)
