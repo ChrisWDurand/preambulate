@@ -272,8 +272,8 @@ Client behavior on 401:
   (or prints the URL if headless). User re-authenticates via GitHub OAuth,
   receives new `prm_live_` key, updates `PREAMBULATE_API_KEY`.
 
-**preambulate to implement:** `preambulate sync register` subcommand.
-No server change required.
+**preambulate:** `preambulate sync register` implemented — opens `https://preambulate.dev`
+in browser (or prints URL if headless). No server change required.
 
 ---
 

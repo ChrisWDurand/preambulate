@@ -93,8 +93,45 @@ def print_briefing(
 
 def _recency_briefing(conn: "GraphConnection", current_session_id: str) -> list[str]:
     lines = ["\n── preambulate memory briefing ─────────────────────────────"]
+    proposal_lines = _pending_proposals(conn, current_session_id)
+    if proposal_lines:
+        lines.extend(proposal_lines)
     lines.extend(_top_active_nodes(conn, current_session_id))
     lines.append(_FOOTER)
+    return lines
+
+
+def _pending_proposals(conn: "GraphConnection", current_session_id: str) -> list[str]:
+    """
+    Return briefing lines for pending contract proposals from other agents.
+    Surfaces Decision nodes with decision_type 'contract_proposal' or
+    'contract_agreed' that originated in a different session.
+    """
+    rows = conn.execute(
+        """
+        MATCH (d:Decision)
+        WHERE d.decision_type IN ['contract_proposal', 'contract_agreed']
+          AND d.session_id <> $current_session_id
+        OPTIONAL MATCH (d)-[:ANCHORS]->(a:Artifact)
+        RETURN d.label, d.rationale, d.decision_type, d.session_id, a.path
+        ORDER BY d.timestamp DESC
+        LIMIT 5
+        """,
+        parameters={"current_session_id": current_session_id},
+    )
+    if not rows:
+        return []
+
+    lines = ["\nPending proposals:"]
+    for label, rationale, dtype, sid, contract_path in rows:
+        short_sid = (sid or "")[:8]
+        tag = "AGREED" if dtype == "contract_agreed" else "PROPOSAL"
+        anchor = f"  → {contract_path}" if contract_path else ""
+        lines.append(f"  [{tag}] [{short_sid}] {label}")
+        if anchor:
+            lines.append(anchor)
+        if rationale and not _is_boring(rationale):
+            lines.append(f"    {rationale[:120]}")
     return lines
 
 

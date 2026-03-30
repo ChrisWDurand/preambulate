@@ -258,6 +258,23 @@ def _pull(
 
 
 # ------------------------------------------------------------
+# Register
+# ------------------------------------------------------------
+
+def _register() -> None:
+    """Open the preambulate signup page to obtain or renew an API key."""
+    url = "https://preambulate.dev"
+    try:
+        import webbrowser
+        webbrowser.open(url)
+        print(f"preambulate sync: opening {url}")
+    except Exception:
+        print(f"preambulate sync: visit {url}")
+    print("  sign in with GitHub to receive a new API key")
+    print("  then run: export PREAMBULATE_API_KEY=<your-key>")
+
+
+# ------------------------------------------------------------
 # Rotate
 # ------------------------------------------------------------
 
@@ -337,9 +354,9 @@ def main() -> None:
     parser.add_argument(
         "op",
         nargs="?",
-        choices=["push", "pull", "rotate"],
+        choices=["push", "pull", "rotate", "register"],
         default="push",
-        help="Operation: push (default), pull, or rotate (rotate API + encryption keys).",
+        help="Operation: push (default), pull, rotate (rotate API + encryption keys), or register (open signup page).",
     )
     parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
     parser.add_argument(
@@ -368,6 +385,8 @@ def main() -> None:
         _push(args.db, args.endpoint, args.api_key, args.dry_run, args.full)
     elif args.op == "pull":
         _pull(args.db, args.endpoint, args.api_key, args.dry_run)
+    elif args.op == "register":
+        _register()
     else:
         _rotate(args.db, args.endpoint, args.api_key)
 

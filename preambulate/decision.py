@@ -63,10 +63,12 @@ DEFAULT_DB_PATH = get_db_path()
 SUPPORTED_RELS = {"GOVERNS", "INSTANTIATES", "DERIVES_FROM", "RESONATES_WITH"}
 
 # decision_type enum values (stored as STRING in Kuzu)
-DT_USER       = "user"
-DT_INFERRED   = "claude_inferred"
-DT_AUTONOMOUS = "claude_autonomous"
-DT_BLOCKED    = "blocked"
+DT_USER              = "user"
+DT_INFERRED          = "claude_inferred"
+DT_AUTONOMOUS        = "claude_autonomous"
+DT_BLOCKED           = "blocked"
+DT_CONTRACT_PROPOSAL = "contract_proposal"
+DT_CONTRACT_AGREED   = "contract_agreed"
 
 # rationale_source enum values
 RS_USER_STATED     = "user_stated"
@@ -367,6 +369,11 @@ def main() -> None:
     parser.add_argument("--label",     default=None, help="One-line summary of work done")
     parser.add_argument("--rationale", default=None, help="Why key choices were made")
     parser.add_argument(
+        "--decision-type",
+        default=DT_USER,
+        help=f"Decision type (default: {DT_USER}). Use '{DT_CONTRACT_PROPOSAL}' or '{DT_CONTRACT_AGREED}' for agent contract proposals.",
+    )
+    parser.add_argument(
         "--touched",
         default="",
         help="Comma-separated relative paths of files edited this session",
@@ -433,6 +440,7 @@ def main() -> None:
             rationale=args.rationale,
             touched=touched,
             db_path=args.db,
+            decision_type=args.decision_type,
         )
 
     # 2. Ensure concepts (must precede edges that reference them)
