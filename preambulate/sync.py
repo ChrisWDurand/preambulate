@@ -89,6 +89,10 @@ def _push(
         print(f"preambulate sync: no database at {db_path}")
         return
 
+    if not api_key:
+        print("preambulate sync: PREAMBULATE_API_KEY not set — skipping push")
+        return
+
     project_root = db_path.parent
     project      = _project_name(project_root)
 
@@ -127,10 +131,6 @@ def _push(
             f"exceeds {MAX_PAYLOAD_BYTES // 1024 // 1024} MB limit. "
             f"Use 'preambulate export dump' to inspect the graph."
         )
-        return
-
-    if not api_key:
-        print("preambulate sync: PREAMBULATE_API_KEY not set — aborting")
         return
 
     headers = {**_common_headers(db_path, project, api_key), "Content-Type": "application/octet-stream"}
@@ -184,6 +184,10 @@ def _pull(
         print(f"preambulate sync: no database at {db_path}")
         return
 
+    if not api_key:
+        print("preambulate sync: PREAMBULATE_API_KEY not set — skipping pull")
+        return
+
     project_root = db_path.parent
     project      = _project_name(project_root)
 
@@ -192,10 +196,6 @@ def _pull(
 
     if dry_run:
         print("  (dry-run — nothing fetched)")
-        return
-
-    if not api_key:
-        print("preambulate sync: PREAMBULATE_API_KEY not set — aborting")
         return
 
     req = urllib_request.Request(
