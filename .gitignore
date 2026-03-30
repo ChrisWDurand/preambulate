@@ -3,3 +3,10 @@ memory.db/
 graph_export.json
 .preambulate_id
 .preambulate_sync_state.json
+
+# Python build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
