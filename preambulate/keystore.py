@@ -58,6 +58,25 @@ def replace_key(project_id: str, new_key: bytes) -> None:
     path.chmod(0o600)
 
 
+def _api_key_path() -> Path:
+    return _key_dir() / "api_key"
+
+
+def load_api_key() -> str:
+    """Load the API key from ~/.preambulate/api_key. Returns '' if not found."""
+    path = _api_key_path()
+    if not path.exists():
+        return ""
+    return path.read_text().strip()
+
+
+def save_api_key(key: str) -> None:
+    """Persist the API key to ~/.preambulate/api_key (0o600)."""
+    path = _api_key_path()
+    path.write_text(key.strip())
+    path.chmod(0o600)
+
+
 def encrypt(project_id: str, data: bytes) -> bytes:
     """Encrypt data with this project's key."""
     return Fernet(load_key(project_id)).encrypt(data)

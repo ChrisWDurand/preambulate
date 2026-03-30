@@ -186,10 +186,12 @@ the interface (e.g. preambulate + preambulate-web on this contract).
 
 In both cases the **coordinator is the single writer** to contract files.
 
-The coordinator does not search the codebase to validate proposals — it traverses
-the graph. Rationale chains, edge relationships, and anchored decisions carry the
-context needed to check for conflicts. This is why every decision has rationale
-and every edge has a reason.
+**Role hierarchy:**
+- **Architect** — sets direction; the coordinator escalates to the Architect only on genuine conflicts or decisions requiring human authority
+- **Coordinator** — validates proposals via graph traversal, writes to the graph, closes the loop autonomously when no conflicts are found
+- **Spawned agents / teams** — execute tasks, submit proposals as output; do not write to the graph
+
+**Validation model:** The coordinator uses the graph as a spatial index — traversing anchored decisions, edge relationships, and rationale chains to identify the relevant region of the codebase, then reading only that region. The graph narrows search to regions of interest; it does not replace reading code. This is why every decision has rationale and every edge has a reason: they make the graph's geometry precise enough for targeted validation.
 
 ### Proposal convention
 
@@ -203,6 +205,10 @@ A contract proposal is a `Decision` node with:
 
 The Decision is anchored (`ANCHORS`) to the contract `Artifact` node it concerns.
 Coordinator picks up `"contract_agreed"` nodes, not raw proposals.
+
+Spawned agents surface proposals to the coordinator as output. The coordinator
+validates via graph traversal and writes to the graph. Subagents do not write to
+the graph directly. The coordinator is the sole graph writer in all patterns.
 
 ### Contract Artifact convention
 
@@ -223,7 +229,7 @@ query serves this purpose. No new transport is needed.
 ### Spawn mechanism
 
 ```
-claude --print "<prompt>" --cwd ~/source/repos/preambulate-web
+cd ~/source/repos/preambulate-web && claude --print "<prompt>"
 ```
 
 Prompt payload (three parts):
@@ -237,12 +243,11 @@ Migration complete as of 2026-03-29.
 
 ### Spawn trigger
 
-Today the coordinator initiates spawning explicitly. Planned improvement: the Stop
-hook POSTs a lightweight notification (project name + contract path) to a `/notify`
-endpoint; the counterpart's next SessionStart pulls it before running capture. No
-new infrastructure — one new endpoint on the Worker.
-
-Design proposed in `preambulate-web/interface/client-web.md`.
+The coordinator initiates spawning directly — runs `claude` as a subprocess in
+the target repo. No human needs to open the other repo. The spawned agent reads
+context via `preambulate sync pull` + `preambulate briefing --focal <contract>`
+and acts under protocol. The `/notify` endpoint plan is superseded by direct
+coordinator-initiated spawning.
 
 ### Responses to preambulate-web spawning questions (2026-03-29)
 
@@ -250,7 +255,7 @@ Design proposed in `preambulate-web/interface/client-web.md`.
 `~/source/repos/preambulate` and `~/source/repos/preambulate-web` on the native
 WSL filesystem. Spawning protocol can proceed.
 
-**Spawn mechanism:** Accepted. `claude --print "<prompt>" --cwd ~/source/repos/preambulate-web`
+**Spawn mechanism:** Accepted. `cd ~/source/repos/preambulate-web && claude --print "<prompt>"` (`--cwd` flag does not exist in the claude CLI)
 is the spawn call. Three-part payload: both contract paths + `preambulate briefing
 --focal interface/web-client.md` output as plaintext context.
 

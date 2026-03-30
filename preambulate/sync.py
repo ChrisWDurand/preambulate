@@ -42,7 +42,7 @@ from preambulate import get_db_path, get_project_dir
 from preambulate.export import dump_since, merge_remote
 from preambulate.graph import open_graph
 from preambulate.identity import get_machine_id
-from preambulate.keystore import decrypt, encrypt, key_exists, replace_key
+from preambulate.keystore import decrypt, encrypt, key_exists, load_api_key, replace_key, save_api_key
 from preambulate.sync_state import get_last_push_dt, record_pull, record_push
 
 
@@ -63,9 +63,9 @@ def _project_name(root: Path) -> str:
     return root.resolve().name
 
 
-def _common_headers(db_path: Path, project: str) -> dict:
+def _common_headers(db_path: Path, project: str, api_key: str) -> dict:
     return {
-        "Authorization":           f"Bearer {os.environ.get('PREAMBULATE_API_KEY', '')}",
+        "Authorization":           f"Bearer {api_key}",
         "X-Preambulate-Project":   project,
         "X-Preambulate-Machine":   get_machine_id(db_path),
         "X-Preambulate-Timestamp": datetime.now(timezone.utc).isoformat(),
@@ -133,7 +133,7 @@ def _push(
         print("preambulate sync: PREAMBULATE_API_KEY not set — aborting")
         return
 
-    headers = {**_common_headers(db_path, project), "Content-Type": "application/octet-stream"}
+    headers = {**_common_headers(db_path, project, api_key), "Content-Type": "application/octet-stream"}
     req = urllib_request.Request(
         url=f"{endpoint}?op=push",
         data=payload,
@@ -146,7 +146,7 @@ def _push(
         record_push(project_root, "ok")
     except HTTPError as exc:
         if exc.code == 401:
-            print("preambulate sync: push failed — invalid API key (check PREAMBULATE_API_KEY)")
+            print("preambulate sync: push failed — invalid API key (run 'preambulate sync register' to get a new key)")
         elif exc.code == 402:
             print("preambulate sync: push failed — sync not authorized (visit preambulate.dev to activate your account)")
         elif exc.code == 409:
@@ -201,7 +201,7 @@ def _pull(
     req = urllib_request.Request(
         url=f"{endpoint}?op=pull&project={project}",
         method="GET",
-        headers=_common_headers(db_path, project),
+        headers=_common_headers(db_path, project, api_key),
     )
     try:
         with urllib_request.urlopen(req, timeout=30) as resp:
@@ -211,7 +211,7 @@ def _pull(
             print(f"preambulate sync: no remote graph for '{project}' yet — skipping pull")
             return
         if exc.code == 401:
-            print("preambulate sync: pull failed — invalid API key (check PREAMBULATE_API_KEY)")
+            print("preambulate sync: pull failed — invalid API key (run 'preambulate sync register' to get a new key)")
         elif exc.code == 402:
             print("preambulate sync: pull failed — sync not authorized (visit preambulate.dev to activate your account)")
         elif exc.code == 409:
@@ -261,6 +261,35 @@ def _pull(
 # Register
 # ------------------------------------------------------------
 
+def _update_shell_exports(key: str) -> None:
+    """Update PREAMBULATE_API_KEY in shell rc files that already export it."""
+    candidates = [
+        Path.home() / ".bashrc",
+        Path.home() / ".bash_profile",
+        Path.home() / ".profile",
+        Path.home() / ".zshrc",
+    ]
+    updated = []
+    for rc in candidates:
+        if not rc.exists():
+            continue
+        text = rc.read_text()
+        if "PREAMBULATE_API_KEY" not in text:
+            continue
+        import re
+        new_text = re.sub(
+            r"^(export\s+PREAMBULATE_API_KEY=).*$",
+            rf"\g<1>{key}",
+            text,
+            flags=re.MULTILINE,
+        )
+        if new_text != text:
+            rc.write_text(new_text)
+            updated.append(rc.name)
+    if updated:
+        print(f"  updated {', '.join('~/' + f for f in updated)} — run 'source ~/{updated[0]}' to apply")
+
+
 def _register() -> None:
     """Open the preambulate signup page to obtain or renew an API key."""
     url = "https://preambulate.dev"
@@ -271,7 +300,8 @@ def _register() -> None:
     except Exception:
         print(f"preambulate sync: visit {url}")
     print("  sign in with GitHub to receive a new API key")
-    print("  then run: export PREAMBULATE_API_KEY=<your-key>")
+    print("  to persist the key across all shells, run:")
+    print("    preambulate sync save-key <your-key>")
 
 
 # ------------------------------------------------------------
@@ -305,7 +335,7 @@ def _rotate(db_path: Path, endpoint: str, api_key: str) -> None:
 
     # Step 2 — request key rotation
     rotate_url = endpoint.replace("/sync", "/keys/rotate")
-    headers    = {**_common_headers(db_path, _project_name(project_root)), "Content-Length": "0"}
+    headers    = {**_common_headers(db_path, _project_name(project_root), api_key), "Content-Length": "0"}
     req = urllib_request.Request(
         url=rotate_url,
         data=b"",
@@ -354,9 +384,14 @@ def main() -> None:
     parser.add_argument(
         "op",
         nargs="?",
-        choices=["push", "pull", "rotate", "register"],
+        choices=["push", "pull", "rotate", "register", "save-key"],
         default="push",
-        help="Operation: push (default), pull, rotate (rotate API + encryption keys), or register (open signup page).",
+        help="Operation: push (default), pull, rotate, register, or save-key <key>.",
+    )
+    parser.add_argument(
+        "key_value",
+        nargs="?",
+        help="API key value for save-key operation.",
     )
     parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
     parser.add_argument(
@@ -366,8 +401,8 @@ def main() -> None:
     )
     parser.add_argument(
         "--api-key",
-        default=os.environ.get("PREAMBULATE_API_KEY", ""),
-        help="API key (defaults to PREAMBULATE_API_KEY env var).",
+        default=load_api_key() or os.environ.get("PREAMBULATE_API_KEY"),
+        help="API key (defaults to ~/.preambulate/api_key, then PREAMBULATE_API_KEY env var).",
     )
     parser.add_argument(
         "--dry-run",
@@ -387,6 +422,15 @@ def main() -> None:
         _pull(args.db, args.endpoint, args.api_key, args.dry_run)
     elif args.op == "register":
         _register()
+    elif args.op == "save-key":
+        if not args.key_value:
+            print("preambulate sync: save-key requires a key value")
+            print("  usage: preambulate sync save-key <your-key>")
+        else:
+            save_api_key(args.key_value)
+            print(f"preambulate sync: API key saved to ~/.preambulate/api_key")
+            _update_shell_exports(args.key_value)
+            print("  key will be used automatically — no export needed")
     else:
         _rotate(args.db, args.endpoint, args.api_key)
 
