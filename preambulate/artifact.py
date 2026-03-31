@@ -124,9 +124,11 @@ def main() -> None:
     import argparse
     parser = argparse.ArgumentParser(
         description=(
-            "Record a file edit as an Artifact node in the graph. "
-            "Runs automatically via the PostToolUse hook — not intended for manual use. "
-            "Expects a JSON payload on stdin from Claude Code."
+            "Fires automatically when Claude uses Write or Edit tools. "
+            "Reads the hook payload from stdin (JSON: tool_name, tool_input.file_path, session_id). "
+            "Creates an Artifact node for the touched file if it does not exist, "
+            "then creates a Decision node and links them with an ANCHORS edge. "
+            "Prints 'preambulate: artifact new [filename]' when the artifact record is new."
         )
     )
     parser.parse_args()
