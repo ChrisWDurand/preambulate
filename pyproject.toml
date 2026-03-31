@@ -6,9 +6,10 @@ build-backend = "setuptools.build_meta"
 name = "preambulate"
 version = "0.1.0"
 description = "Graph-based project memory for Claude Code — semantic density over transcript volume"
-license = {text = "AGPL-3.0-only"}
-requires-python = ">=3.8"
-dependencies = ["kuzu==0.4.2", "mcp>=1.0", "cryptography>=3.0"]
+readme = "README.md"
+license = "AGPL-3.0-only"
+requires-python = ">=3.10"
+dependencies = ["kuzu==0.4.2", "mcp>=1.0,<2.0", "cryptography>=3.0"]
 
 [project.urls]
 Homepage = "https://preambulate.dev"
