@@ -16,15 +16,13 @@ Usage:
     preambulate sync               # defaults to push
 
     preambulate sync push --dry-run           # show payload size, nothing sent
-    preambulate sync push --endpoint URL      # override endpoint (testing)
     preambulate sync push --full              # force full dump regardless of checkpoint
 
 Authentication:
     Set PREAMBULATE_API_KEY in the environment.
 
 Environment variables:
-    PREAMBULATE_API_KEY     — required for push/pull (no-op if absent in dry-run)
-    PREAMBULATE_ENDPOINT    — override the default endpoint
+    PREAMBULATE_API_KEY     — required for push/pull (no-op if absent)
     CLAUDE_PROJECT_DIR      — project root (set by Claude Code hooks)
 """
 
@@ -395,11 +393,6 @@ def main() -> None:
     )
     parser.add_argument("--db", type=Path, default=DEFAULT_DB_PATH)
     parser.add_argument(
-        "--endpoint",
-        default=os.environ.get("PREAMBULATE_ENDPOINT") or DEFAULT_ENDPOINT,
-        help="Override the sync endpoint.",
-    )
-    parser.add_argument(
         "--api-key",
         default=load_api_key() or os.environ.get("PREAMBULATE_API_KEY"),
         help="API key (defaults to ~/.preambulate/api_key, then PREAMBULATE_API_KEY env var).",
@@ -417,9 +410,9 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.op == "push":
-        _push(args.db, args.endpoint, args.api_key, args.dry_run, args.full)
+        _push(args.db, DEFAULT_ENDPOINT, args.api_key, args.dry_run, args.full)
     elif args.op == "pull":
-        _pull(args.db, args.endpoint, args.api_key, args.dry_run)
+        _pull(args.db, DEFAULT_ENDPOINT, args.api_key, args.dry_run)
     elif args.op == "register":
         _register()
     elif args.op == "save-key":
@@ -432,7 +425,7 @@ def main() -> None:
             _update_shell_exports(args.key_value)
             print("  key will be used automatically — no export needed")
     else:
-        _rotate(args.db, args.endpoint, args.api_key)
+        _rotate(args.db, DEFAULT_ENDPOINT, args.api_key)
 
 
 if __name__ == "__main__":
