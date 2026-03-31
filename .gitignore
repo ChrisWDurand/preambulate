@@ -4,6 +4,11 @@ graph_export.json
 .preambulate_id
 .preambulate_sync_state.json
 
+# Local archive (not for distribution)
+archive/
+interface/
+docs/
+
 # Python build artifacts
 __pycache__/
 *.py[cod]
