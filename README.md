@@ -27,6 +27,8 @@ preambulate install
 
 After that, preambulate runs automatically in every Claude Code session. No per-project setup required.
 
+On first use, Claude Code will prompt you to approve the hook commands. Approve them — this is a one-time step.
+
 To initialise a database manually (optional — happens automatically on first session):
 
 ```bash
