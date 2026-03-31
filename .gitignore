@@ -4,7 +4,8 @@ graph_export.json
 .preambulate_id
 .preambulate_sync_state.json
 
-# Local archive (not for distribution)
+# Local only (not for distribution)
+CLAUDE.md
 archive/
 interface/
 docs/
