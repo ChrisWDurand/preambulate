@@ -1,7 +1,5 @@
 # preambulate
 
-Want to introduce the tool?
-
 Claude forgets everything between sessions. Every morning you re-explain the architecture. Every new team member asks questions the codebase already answered. Every agent you spawn starts blind.
 
 You're not losing code. You're losing reasoning.
