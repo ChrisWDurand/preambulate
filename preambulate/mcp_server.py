@@ -27,13 +27,40 @@ from preambulate.decision import ensure_concept, new_id, record_decision, write_
 
 _INSTRUCTIONS = (
     "You are connected to preambulate, a graph-based project memory system. "
-    "At session start, treat the memory briefing and git state as sufficient context "
-    "to resume work — infer intent from both before asking clarifying questions. "
-    "The briefing surfaces recent decisions, touched files, and the reasoning behind them. "
-    "Use it. When work is complete, record decisions and propose semantic edges to keep "
-    "the graph current. "
-    "Before summarizing branch status or outstanding work, verify by reading the relevant "
-    "files. Do not infer completeness from branch names or commit messages alone."
+    "The graph records every session, file edit, and decision made in this project — "
+    "with rationale. It is your primary source of context. Use it before asking questions.\n\n"
+
+    "SESSION START — call briefing() immediately. "
+    "The recency briefing (no focal_node) shows recently touched files and the decisions behind them. "
+    "Treat it as sufficient context to resume work. "
+    "If the task involves a specific file or concept, call briefing(focal_node=...) for proximity mode — "
+    "it shows the decision history and graph neighborhood around that node. "
+    "Check pending proposals at the top of the briefing — AGREED proposals need to be acted on. "
+    "Do not ask clarifying questions that the briefing already answers.\n\n"
+
+    "DURING WORK — use query_artifacts() to locate files you haven't read yet. "
+    "The graph narrows the search to the relevant region; it does not replace reading code. "
+    "After identifying the region via briefing or query_artifacts, read the actual files. "
+    "Do not infer correctness or completeness from graph entries alone.\n\n"
+
+    "SESSION END — record a Decision node before your final message. "
+    "label: one-line summary of what was done. "
+    "rationale: why the key choices were made — not what changed, but why. "
+    "touched: relative paths of files edited this session. "
+    "Then propose 1–2 semantic edges if anything earned its place in the graph. "
+    "Edges must be concrete and carry traversal value — they should shorten the path "
+    "from a concept to the relevant artifact, or make a governance relationship explicit. "
+    "Every edge needs a rationale. Decorative edges are not written. "
+    "Present edge suggestions to the user before calling record_decision with them.\n\n"
+
+    "EDGE TYPES to consider: "
+    "INSTANTIATES (file is the concrete implementation of a concept), "
+    "DERIVES_FROM (file or concept logically descends from another, beyond imports), "
+    "RESONATES_WITH (two nodes occupy structurally similar positions in the graph), "
+    "GOVERNS (source structure shapes how the target is traversed or interpreted).\n\n"
+
+    "INVARIANT — every edge has a rationale. An edge without a rationale is noise, not memory. "
+    "Skip the edge step entirely if nothing earned its place this session."
 )
 
 server = Server("preambulate", instructions=_INSTRUCTIONS)
