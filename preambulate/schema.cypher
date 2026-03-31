@@ -1,7 +1,6 @@
 // ============================================================
 // Preambulate — Graph Memory Schema
 // Storage: Kuzu (embedded, local-first)
-// Spec:    schema.spec.md
 // Version: 0.1.0
 // ============================================================
 // Run via Python init.py or directly through a Kuzu connection.
@@ -80,10 +79,6 @@ CREATE NODE TABLE Decision (
     PRIMARY KEY (id)
 );
 
-// author           — identity of the person or agent who made this decision.
-//                    NULL in v1 (single-user). Populated in v2 for attribution and conflict resolution.
-// machine_id       — stable identifier of the machine where the decision was made.
-//                    NULL in v1. Populated in v2 to track which client last wrote a region.
 // decision_type    — who initiated this decision.
 //                    Values: user | claude_inferred | claude_autonomous | blocked
 // rationale_source — how the rationale was produced.

@@ -137,7 +137,7 @@ def insert_founding_edges(conn: GraphConnection, ids: dict) -> None:
             **base,
             "g_id":     ids["geometry"],
             "e_id":     ids["exploration"],
-            "rationale": "The shape of the graph governs what can be explored.",
+            "rationale": "geometry governs exploration.",
         },
     )
 
@@ -153,7 +153,7 @@ def insert_founding_edges(conn: GraphConnection, ids: dict) -> None:
             **base,
             "g_id":     ids["geometry"],
             "e_id":     ids["exploration"],
-            "rationale": "Structure limits what is discoverable. Exploration is bounded by geometry.",
+            "rationale": "geometry constrains exploration.",
         },
     )
 
@@ -169,7 +169,7 @@ def insert_founding_edges(conn: GraphConnection, ids: dict) -> None:
             **base,
             "e_id":     ids["exploration"],
             "g_id":     ids["geometry"],
-            "rationale": "Discovery is downstream of structure. Exploration exists because geometry was laid first.",
+            "rationale": "exploration derives from geometry.",
         },
     )
 
@@ -184,7 +184,7 @@ def insert_founding_edges(conn: GraphConnection, ids: dict) -> None:
         parameters={
             **base,
             "g_id":     ids["governs"],
-            "rationale": "The concept 'governs' names the edge type GOVERNS — it defines itself. Reflexive self-description is the founding geometry's signature property.",
+            "rationale": "governs defines the GOVERNS edge type.",
         },
     )
 

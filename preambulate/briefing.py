@@ -102,11 +102,7 @@ def _recency_briefing(conn: "GraphConnection", current_session_id: str) -> list[
 
 
 def _pending_proposals(conn: "GraphConnection", current_session_id: str) -> list[str]:
-    """
-    Return briefing lines for pending contract proposals from other agents.
-    Surfaces Decision nodes with decision_type 'contract_proposal' or
-    'contract_agreed' that originated in a different session.
-    """
+    """Return briefing lines for pending proposals from other sessions."""
     rows = conn.execute(
         """
         MATCH (d:Decision)

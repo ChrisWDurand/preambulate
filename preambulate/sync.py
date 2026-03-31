@@ -94,13 +94,10 @@ def _push(
     project_root = db_path.parent
     project      = _project_name(project_root)
 
-    # Server does a full replace on every push — no server-side merge.
-    # Always dump the full local graph so the remote stays complete.
-    # The `full` flag and `since` are preserved for dry-run reporting only.
     since = None if full else get_last_push_dt(project_root)
 
     conn      = open_graph(db_path)
-    data      = dump_since(conn, None)   # always full — server is a dumb store
+    data      = dump_since(conn, None)
 
     node_total = sum(len(v) for v in data["nodes"].values())
     edge_total = len(data["edges"])
