@@ -121,6 +121,20 @@ def capture_artifact(
 
 
 def main() -> None:
+    import argparse
+    parser = argparse.ArgumentParser(
+        description=(
+            "Record a file edit as an Artifact node in the graph. "
+            "Runs automatically via the PostToolUse hook — not intended for manual use. "
+            "Expects a JSON payload on stdin from Claude Code."
+        )
+    )
+    parser.parse_args()
+
+    if sys.stdin.isatty():
+        print("preambulate artifact: hook command — expects JSON on stdin from Claude Code")
+        return
+
     try:
         payload = json.loads(sys.stdin.read())
     except (json.JSONDecodeError, ValueError):
