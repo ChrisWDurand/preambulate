@@ -76,6 +76,8 @@ CREATE NODE TABLE Decision (
     machine_id       STRING,
     decision_type    STRING,
     rationale_source STRING,
+    outcome          STRING,
+    contract_id      STRING,
     PRIMARY KEY (id)
 );
 
@@ -83,6 +85,13 @@ CREATE NODE TABLE Decision (
 //                    Values: user | claude_inferred | claude_autonomous | blocked
 // rationale_source — how the rationale was produced.
 //                    Values: user_stated | claude_inferred | system_blocked
+// outcome          — terminal state of this decision's work.
+//                    Values: resolved | escalated | abandoned
+//                    Required for flag severity learning; frozen weights if absent.
+// contract_id      — content-addressed identity of the contract under which this
+//                    decision was made. H(schema ∥ context ∥ t₀). Used for ghost
+//                    detection: stale if ∄ match at query time, schema_drift if
+//                    schema has migrated, orphan if ∄ in any Decision.context.
 
 
 // ------------------------------------------------------------

@@ -158,8 +158,6 @@ def install(settings_path: Path, dry_run: bool = False) -> None:
         for cmd in all_skipped:
             print(f"  skipped (already present): {cmd}")
 
-    ensure_gitignore(Path.cwd(), dry_run=dry_run)
-
 
 def main() -> None:
     default_path = Path.home() / ".claude" / "settings.json"

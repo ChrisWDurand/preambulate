@@ -39,7 +39,12 @@ def capture_session_start(db_path: Path, session_id: str) -> None:
         print(f"preambulate: no database at {db_path}, running init...")
         init_db(db_path=db_path)
 
-    conn = open_graph(db_path)
+    try:
+        conn = open_graph(db_path)
+    except Exception as exc:
+        print(f"preambulate: failed to open memory.db: {exc}")
+        print("  Run 'preambulate doctor' to check for WAL corruption and get recovery steps.")
+        return
 
     decision_id, ts = create_decision_node(
         conn, session_id,
@@ -72,7 +77,11 @@ def capture_session_start(db_path: Path, session_id: str) -> None:
     )
 
     print(f"preambulate: session captured [{session_id}] at {ts.isoformat()}")
-    print_briefing(conn, session_id)
+    try:
+        print_briefing(conn, session_id)
+    except Exception as exc:
+        print(f"preambulate: briefing failed: {exc}")
+        print("  Run 'preambulate doctor' to check memory.db health.")
 
 
 def main() -> None:
