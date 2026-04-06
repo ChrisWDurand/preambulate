@@ -10,6 +10,17 @@ archive/
 interface/
 docs/
 
+# Secrets and credentials — vacuously contextual; never commit
+*.key
+*.pem
+*.cert
+*.p12
+*.pfx
+.env
+.env.*
+*_api_key
+*_secret
+
 # Python build artifacts
 __pycache__/
 *.py[cod]

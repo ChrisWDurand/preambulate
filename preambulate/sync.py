@@ -31,10 +31,18 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import ssl
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib import request as urllib_request
 from urllib.error import HTTPError, URLError
+
+
+def _ssl_context() -> ssl.SSLContext:
+    ctx = ssl.create_default_context()
+    ctx.verify_mode = ssl.CERT_REQUIRED
+    ctx.check_hostname = True
+    return ctx
 
 from preambulate import get_db_path, get_project_dir
 from preambulate.export import dump_since, merge_remote
@@ -136,7 +144,7 @@ def _push(
         headers=headers,
     )
     try:
-        with urllib_request.urlopen(req, timeout=30) as resp:
+        with urllib_request.urlopen(req, timeout=30, context=_ssl_context()) as resp:
             print(f"preambulate sync: push complete  status={resp.status}")
         record_push(project_root, "ok")
     except HTTPError as exc:
@@ -199,7 +207,7 @@ def _pull(
         headers=_common_headers(db_path, project, api_key),
     )
     try:
-        with urllib_request.urlopen(req, timeout=30) as resp:
+        with urllib_request.urlopen(req, timeout=30, context=_ssl_context()) as resp:
             raw = resp.read()
     except HTTPError as exc:
         if exc.code == 404:
@@ -280,6 +288,7 @@ def _update_shell_exports(key: str) -> None:
         )
         if new_text != text:
             rc.write_text(new_text)
+            rc.chmod(0o600)
             updated.append(rc.name)
     if updated:
         print(f"  updated {', '.join('~/' + f for f in updated)} — run 'source ~/{updated[0]}' to apply")
@@ -338,7 +347,7 @@ def _rotate(db_path: Path, endpoint: str, api_key: str) -> None:
         headers=headers,
     )
     try:
-        with urllib_request.urlopen(req, timeout=30) as resp:
+        with urllib_request.urlopen(req, timeout=30, context=_ssl_context()) as resp:
             body = json.loads(resp.read())
     except HTTPError as exc:
         print(f"preambulate sync: rotate failed — HTTP {exc.code} {exc.reason}")

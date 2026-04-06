@@ -11,6 +11,8 @@ Key file: ~/.preambulate/{project_id}.key
 
 from __future__ import annotations
 
+import os
+import tempfile
 from pathlib import Path
 
 from cryptography.fernet import Fernet
@@ -71,10 +73,19 @@ def load_api_key() -> str:
 
 
 def save_api_key(key: str) -> None:
-    """Persist the API key to ~/.preambulate/api_key (0o600)."""
+    """Persist the API key to ~/.preambulate/api_key (0o600), using an atomic write."""
     path = _api_key_path()
-    path.write_text(key.strip())
-    path.chmod(0o600)
+    dir_ = path.parent
+    fd, tmp = tempfile.mkstemp(dir=dir_)
+    try:
+        os.chmod(fd, 0o600)
+        os.write(fd, key.strip().encode())
+        os.close(fd)
+        os.replace(tmp, path)
+    except Exception:
+        os.close(fd)
+        os.unlink(tmp)
+        raise
 
 
 def encrypt(project_id: str, data: bytes) -> bytes:
